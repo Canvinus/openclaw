@@ -263,8 +263,8 @@ async function startModel() {
     baseUrl,
     /** Holds the next turn's first answer until released. */
     holdNextTurn() {
-      const entered = createDeferred<void>();
-      const release = createDeferred<void>();
+      const entered = createDeferred();
+      const release = createDeferred();
       held = { entered: () => entered.resolve(), release: release.promise };
       return { entered: entered.promise, release: () => release.resolve() };
     },
