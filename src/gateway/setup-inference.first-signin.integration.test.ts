@@ -1,6 +1,10 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { createAnthropicResponse } from "../../packages/ai/src/provider-transport-parity.test-support.js";
 import type { WizardNextResult } from "../../packages/gateway-protocol/src/index.js";
+import {
+  GATEWAY_OWNER_PROFILE_ID,
+  type UsersSelfResult,
+} from "../../packages/gateway-protocol/src/schema/users.js";
 import { awaitGateBeforeSettlement, withinTest } from "../../test/helpers/promise.js";
 import { resolveAgentEffectiveModelPrimary } from "../agents/agent-scope.js";
 import { loadAuthProfileStoreWithoutExternalProfiles } from "../agents/auth-profiles/store-runtime.js";
@@ -51,7 +55,7 @@ afterEach(() => {
 });
 
 it(
-  "replaces same-owner device sign-in, preserves other owners, and fences revoked retries through WebSocket",
+  "replaces same-owner sign-in across devices and fences revoked retries through WebSocket",
   { timeout: 90_000 },
   async ({ signal }) => {
     const join = <T>(work: PromiseLike<T>) => withinTest(work, signal);
@@ -167,7 +171,7 @@ it(
           if (!rotated.ok) {
             throw new Error("Expected setup owner device token");
           }
-          // Backend clients keep device ownership; the admin client uses the Gateway owner profile.
+          // Authenticated backend and shared-token clients share the durable Gateway owner.
           owner = await connectGatewayClient({
             mode: "backend",
             url: `ws://127.0.0.1:${port}`,
@@ -183,26 +187,27 @@ it(
           const readProfiles = () =>
             loadAuthProfileStoreWithoutExternalProfiles(state.agentDir()).profiles;
           const setupOwner = owner;
+          for (const actor of [setupOwner, client]) {
+            const self = await actor.request<UsersSelfResult>("users.self", {});
+            expect(self.profile.id).toBe(GATEWAY_OWNER_PROFILE_ID);
+          }
           const start = (sessionId: string, actor = setupOwner) =>
             actor.request("openclaw.setup.auth.start", { ...auth, sessionId });
-          const startSignIn = async (sessionId: string) => {
-            await start(sessionId);
-            return await setupOwner.request<WizardNextResult>("wizard.next", { sessionId });
+          const startSignIn = async (sessionId: string, actor = setupOwner) => {
+            await start(sessionId, actor);
+            return await actor.request<WizardNextResult>("wizard.next", { sessionId });
           };
           const expectPending = (result: WizardNextResult) =>
             expect(result).toMatchObject({ done: false, step: { id: expect.any(String) } });
           const abandoned = await startSignIn("abandoned-signin");
           expectPending(abandoned);
-          await expect(start("different-owner", client)).rejects.toThrow(
-            "OpenClaw setup is already in progress",
-          );
           expect(await owner.request("wizard.next", { sessionId: "abandoned-signin" })).toEqual(
             abandoned,
           );
           expect(readProfiles()).toEqual({});
 
           const sessionId = "replacement-signin";
-          let result = await startSignIn(sessionId);
+          let result = await startSignIn(sessionId, client);
           while (!result.done) {
             const step = result.step;
             if (!step) {
