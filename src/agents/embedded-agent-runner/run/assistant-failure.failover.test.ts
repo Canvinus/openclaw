@@ -224,6 +224,48 @@ describe("assistant failure recovery", () => {
     expect(log.warn).not.toHaveBeenCalledWith(expect.stringContaining("Profile "));
   });
 
+  it("keeps the provider's own error type on the run's failure, through a fallback chain too", async () => {
+    // A prepaid proxy's refusal at an empty balance, a 401 with a type of its own (synthetic).
+    const refusal = {
+      errorMessage: "401 Your balance is empty. Top up to continue.",
+      errorType: "insufficient_balance",
+    };
+    expect(await expectFailure(makeInput(refusal, { fallbackConfigured: false }))).toMatchObject({
+      reason: "auth",
+      errorType: "insufficient_balance",
+    });
+
+    const failure: unknown = await runWithModelFallback({
+      cfg: undefined,
+      provider: "acme-proxy",
+      model: "test-model",
+      manifestPlugins: [],
+      fallbacksOverride: ["acme-proxy/fixture-next"],
+      skipAuthProfileRuntime: true,
+      run: async (provider, model) => {
+        const input = makeInput({ ...refusal, provider, model });
+        for (;;) {
+          const outcome = await handleEmbeddedAssistantFailure(input);
+          if (outcome.action !== "retry") {
+            throw new Error("failure was not surfaced");
+          }
+          input.emptyErrorRetries = outcome.emptyErrorRetries;
+        }
+      },
+    }).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(FailoverError);
+    expect(failure).toMatchObject({
+      reason: "auth",
+      provider: "acme-proxy",
+      model: "fixture-next",
+      errorType: "insufficient_balance",
+      attempts: [
+        expect.objectContaining({ model: "test-model", errorType: "insufficient_balance" }),
+        expect.objectContaining({ model: "fixture-next", errorType: "insufficient_balance" }),
+      ],
+    });
+  });
+
   it("retains provider error details with model fallback=false", async () => {
     for (const [message, reason, status] of [
       ['  400 {"error":{"message":"credit balance is too low"}}  ', "billing", 400],

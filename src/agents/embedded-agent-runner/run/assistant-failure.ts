@@ -523,6 +523,7 @@ export async function handleEmbeddedAssistantFailure(input: {
           authMode,
           status,
           code: failedAssistant?.errorCode,
+          errorType: failedAssistant?.errorType,
           rawError: failedAssistant?.errorMessage?.trim(),
           // Retry reason "timeout" also includes 5xx; only the terminal owner records a deadline.
           timeout:
