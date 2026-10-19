@@ -382,6 +382,7 @@ export async function materializeRequesterScopedMcpToolsForHarnessRunCore(
       liveRuntime = await materializeBundleMcpToolsForRun({
         runtime: scopedRuntime,
         releaseLease: scopedRuntimeHandle?.releaseLease,
+        assertRequesterCurrent: params.requesterProfile?.assertCurrent,
         agentId: params.agentId,
         reservedToolNames: params.reservedToolNames,
       });

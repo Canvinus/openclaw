@@ -17,6 +17,7 @@ import { requesterMcpOAuthIdentity } from "./mcp-oauth-identity.js";
 
 const oauthStatus = vi.hoisted(() => vi.fn());
 const startAuthorization = vi.hoisted(() => vi.fn());
+const toolCalls: string[] = [];
 const authorizationUrl = "https://auth.example/authorize?state=opaque";
 const request = {
   sessionId: "session-connect",
@@ -73,6 +74,7 @@ function createTestRuntime(params: Parameters<CreateSessionMcpRuntime>[0]): Sess
     configFingerprint: params.configFingerprint ?? "test",
     requesterScope: params.requesterScope,
     requesterConnect: params.requesterConnect,
+    isRequesterScopedServer: () => params.requesterScope !== undefined,
     createdAt: Date.now(),
     get activeLeases() {
       return activeLeases;
@@ -95,10 +97,10 @@ function createTestRuntime(params: Parameters<CreateSessionMcpRuntime>[0]): Sess
     markUsed: () => {
       lastUsedAt = Date.now();
     },
-    callTool: async (_serverName, toolName) => ({
-      content: [{ type: "text", text: `called:${toolName}` }],
-      isError: false,
-    }),
+    callTool: async (_serverName, toolName) => {
+      toolCalls.push(toolName);
+      return { content: [{ type: "text", text: `called:${toolName}` }], isError: false };
+    },
     dispose: async () => {},
     joinCleanup: async () => {},
   };
@@ -112,6 +114,7 @@ describe("requester MCP connect runtime", () => {
     oauthStatus.mockReset().mockResolvedValue([{ state: "unauthenticated" }]);
     startAuthorization.mockReset().mockResolvedValue({ status: "redirect", authorizationUrl });
     created.length = 0;
+    toolCalls.length = 0;
     manager = createSessionMcpRuntimeManager({
       createRuntime: (params) => {
         created.push(params);
@@ -244,6 +247,47 @@ describe("requester MCP connect runtime", () => {
     // Neither the profile's credentials nor the shared backend sender's were opened.
     expect(created.filter((params) => params.requesterScope)).toEqual([]);
     expect(oauthStatus).not.toHaveBeenCalled();
+  });
+
+  it("refuses a profile's retained tools once it loses the run's authority", async () => {
+    let current = true;
+    const requesterProfile = {
+      profileId: "profile-a",
+      assertCurrent: () => {
+        if (!current) {
+          throw new Error("operator authority revoked");
+        }
+      },
+    };
+    const materialize = async () =>
+      await materializeBundleMcpToolsForRun({
+        ...(await manager.acquire({
+          ...request,
+          requesterSenderId: "gateway-client",
+          messageChannel: "webchat",
+          requesterProfile,
+          cfg: { ...request.cfg, gateway: { publicOrigin: "https://gateway.example" } },
+        })),
+        assertRequesterCurrent: requesterProfile.assertCurrent,
+      });
+    const signIn = await materialize();
+    oauthStatus.mockResolvedValue([{ state: "authorized" }]);
+    const connected = await materialize();
+    expect(signIn.tools.map((tool) => tool.name)).toEqual(["calendar__connect"]);
+    expect(connected.tools.map((tool) => tool.name)).toEqual(["calendar__events"]);
+
+    // Tools the turn already holds recheck the profile right before each credentialed call.
+    current = false;
+    await expect(connected.tools[0]!.execute("events", {})).rejects.toThrow("revoked");
+    await expect(signIn.tools[0]!.execute("connect", {})).rejects.toThrow("revoked");
+    expect(toolCalls).toEqual([]);
+    expect(startAuthorization).not.toHaveBeenCalled();
+    current = true;
+    await expect(connected.tools[0]!.execute("events", {})).resolves.toMatchObject({
+      content: [{ type: "text", text: "called:events" }],
+    });
+    await signIn.dispose();
+    await connected.dispose();
   });
 
   it.each(

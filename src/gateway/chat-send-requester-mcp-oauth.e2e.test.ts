@@ -6,6 +6,7 @@ import path from "node:path";
 import type { TLSSocket } from "node:tls";
 import { afterEach, expect, it, onTestFailed } from "vitest";
 import { writeOpenAiResponsesText } from "../../test/helpers/openai-responses-sse.js";
+import { createDeferred } from "../../test/helpers/promise.js";
 import { TEST_TLS_CERT_PEM, TEST_TLS_KEY_PEM } from "../../test/helpers/tls-fixture.js";
 import { requesterMcpOAuthIdentity } from "../agents/mcp-oauth-identity.js";
 import { readMcpOAuthCredentialsStatus } from "../agents/mcp-oauth.js";
@@ -21,6 +22,8 @@ import {
 } from "../infra/device-identity.js";
 import { approveDevicePairing } from "../infra/device-pairing-approval.js";
 import { requestDevicePairing } from "../infra/device-pairing.js";
+import { setUserProfileRole } from "../state/user-profile-writes.worker.js";
+import { ensureProfileForEmail } from "../state/user-profiles.js";
 import { getFreePort } from "../test-utils/ports.js";
 import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../utils/message-channel.js";
 import type { GatewayClient } from "./client.js";
@@ -212,6 +215,7 @@ async function startAccountsServer() {
 
 /** Calls the account tool when it is offered, else its sign-in tool, then reports the result. */
 async function startModel() {
+  let held: { entered: () => void; release: Promise<void> } | undefined;
   const server = createServer((request, response) => {
     void (async () => {
       if (request.method !== "POST" || request.url !== "/v1/responses") {
@@ -236,6 +240,13 @@ async function startModel() {
         return;
       }
       const tools = new Set(body.tools?.map((tool) => tool.name));
+      if (held) {
+        // The turn's tools, credentials included, are ready before the model answers.
+        const hold = held;
+        held = undefined;
+        hold.entered();
+        await hold.release;
+      }
       if (tools.has(`${SERVER}__whoami`)) {
         writeToolCall(response, `${SERVER}__whoami`, {});
       } else if (tools.has(`${SERVER}__connect`)) {
@@ -248,7 +259,17 @@ async function startModel() {
     });
   });
   const baseUrl = await listenProvider(server);
-  return { baseUrl, close: () => closeProvider(server) };
+  return {
+    baseUrl,
+    /** Holds the next turn's first answer until released. */
+    holdNextTurn() {
+      const entered = createDeferred<void>();
+      const release = createDeferred<void>();
+      held = { entered: () => entered.resolve(), release: release.promise };
+      return { entered: entered.promise, release: () => release.resolve() };
+    },
+    close: () => closeProvider(server),
+  };
 }
 
 async function ask(client: GatewayClient, sessionKey: string, message: string) {
@@ -269,24 +290,96 @@ function signInLink(reply: string): string {
   return link!;
 }
 
+/** Everything but the Gateway's own section: one agent, the accounts server, the scripted model. */
+function proofConfig(params: {
+  workspaceDir: string;
+  accountsUrl: string;
+  modelBaseUrl: string;
+  gateway: NonNullable<OpenClawConfig["gateway"]>;
+}) {
+  return {
+    agents: {
+      ownership: "explicit",
+      defaults: {
+        workspace: params.workspaceDir,
+        skipBootstrap: true,
+        skills: [],
+        model: { primary: MODEL },
+        models: { [MODEL]: {} },
+      },
+      entries: { main: {} },
+    },
+    gateway: params.gateway,
+    hooks: { enabled: false },
+    mcp: {
+      servers: {
+        [SERVER]: {
+          url: params.accountsUrl,
+          transport: "streamable-http",
+          auth: "oauth",
+          oauth: { identity: "per-requester" },
+        },
+      },
+    },
+    models: {
+      mode: "replace",
+      providers: {
+        "requester-proof": {
+          baseUrl: params.modelBaseUrl,
+          apiKey: "test-token-placeholder",
+          api: "openai-responses",
+          request: { allowPrivateNetwork: true },
+          models: [
+            {
+              id: "model",
+              name: "model",
+              api: "openai-responses",
+              reasoning: false,
+              input: ["text"],
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+              contextWindow: 128_000,
+              maxTokens: 4_096,
+            },
+          ],
+        },
+      },
+    },
+    plugins: { slots: { memory: "none" } },
+    tools: { profile: "full", codeMode: false, toolSearch: false },
+  } satisfies OpenClawConfig;
+}
+
+async function startProof() {
+  const accounts = await startAccountsServer();
+  cleanups.push(accounts.close);
+  const model = await startModel();
+  cleanups.push(model.close);
+  const { tempHome, workspaceDir, envSnapshot } = await setupGatewayTempHome({
+    prefix: "openclaw-requester-mcp-",
+  });
+  cleanups.push(async () => {
+    envSnapshot.restore();
+    await fs.rm(tempHome, { recursive: true, force: true });
+  });
+  // The row a backend client's own identity holds, as a sign-in from before this change.
+  const shared = requesterMcpOAuthIdentity(SERVER, accounts.url, {
+    requesterSenderId: GATEWAY_CLIENT_NAMES.GATEWAY_CLIENT,
+    messageChannel: "webchat",
+  });
+  seedMcpOAuthStoreForTest(shared.storeKey, {
+    tokens: { access_token: "token-shared-account", token_type: "Bearer" },
+  });
+  return { accounts, model, tempHome, workspaceDir, shared };
+}
+
 it(
   "signs each verified person in separately through one backend client",
   { timeout: 120_000 },
   async () => {
-    const accounts = await startAccountsServer();
-    cleanups.push(accounts.close);
-    const model = await startModel();
-    cleanups.push(model.close);
+    const { accounts, model, tempHome, workspaceDir, shared } = await startProof();
     let phase = "starting Gateway";
     onTestFailed(() => {
       process.stderr.write(`requester MCP proof failed while ${phase}\n`);
-    });
-    const { tempHome, workspaceDir, envSnapshot } = await setupGatewayTempHome({
-      prefix: "openclaw-requester-mcp-",
-    });
-    cleanups.push(async () => {
-      envSnapshot.restore();
-      await fs.rm(tempHome, { recursive: true, force: true });
     });
     const port = await getFreePort();
     const gatewayOrigin = `https://127.0.0.1:${port}`;
@@ -294,18 +387,10 @@ it(
     const keyPath = path.join(tempHome, "key.pem");
     await fs.writeFile(certPath, TEST_TLS_CERT_PEM);
     await fs.writeFile(keyPath, TEST_TLS_KEY_PEM);
-    const cfg = {
-      agents: {
-        ownership: "explicit",
-        defaults: {
-          workspace: workspaceDir,
-          skipBootstrap: true,
-          skills: [],
-          model: { primary: MODEL },
-          models: { [MODEL]: {} },
-        },
-        entries: { main: {} },
-      },
+    const cfg = proofConfig({
+      workspaceDir,
+      accountsUrl: accounts.url,
+      modelBaseUrl: model.baseUrl,
       gateway: {
         publicOrigin: gatewayOrigin,
         trustedProxies: ["127.0.0.1"],
@@ -319,48 +404,31 @@ it(
         },
         tls: { enabled: true, autoGenerate: false, certPath, keyPath },
         controlUi: { allowedOrigins: ["https://control.example.test"] },
-      },
-      hooks: { enabled: false },
-      mcp: {
-        servers: {
-          [SERVER]: {
-            url: accounts.url,
-            transport: "streamable-http",
-            auth: "oauth",
-            oauth: { identity: "per-requester" },
+        roles: {
+          default: "member",
+          definitions: {
+            member: {
+              agents: "*",
+              sessions: { others: "none" },
+              scopes: ["operator.read", "operator.write"],
+            },
+            watcher: {
+              agents: "*",
+              sessions: { others: "view" },
+              scopes: ["operator.read", "operator.write"],
+            },
+            denied: { agents: "*", sessions: { others: "none" }, scopes: [] },
           },
         },
       },
-      models: {
-        mode: "replace",
-        providers: {
-          "requester-proof": {
-            baseUrl: model.baseUrl,
-            apiKey: "test-token-placeholder",
-            api: "openai-responses",
-            request: { allowPrivateNetwork: true },
-            models: [
-              {
-                id: "model",
-                name: "model",
-                api: "openai-responses",
-                reasoning: false,
-                input: ["text"],
-                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-                contextWindow: 128_000,
-                maxTokens: 4_096,
-              },
-            ],
-          },
-        },
-      },
-      plugins: { slots: { memory: "none" } },
-      tools: { profile: "full", codeMode: false, toolSearch: false },
-    } satisfies OpenClawConfig;
+    });
     const proxied = (email: string) => ({
       "x-forwarded-for": "203.0.113.10",
       "x-forwarded-user": email,
     });
+    // The dashboard user watches every run; Alice and Bob keep the member default.
+    setUserProfileRole(ensureProfileForEmail("owner@example.test").id, "watcher");
+    const aliceProfileId = ensureProfileForEmail("alice@example.test").id;
     // The Gateway's owner opens its dashboard; trusted-proxy auth approves browser devices.
     const gateway = await startGatewayWithClient({
       cfg,
@@ -407,15 +475,6 @@ it(
     };
     const alice = await asPerson("alice@example.test");
     const bob = await asPerson("bob@example.test");
-    // A sign-in made through the backend client's own identity before this change keeps its
-    // row; verified people neither use nor replace it, and connect their own accounts once.
-    const shared = requesterMcpOAuthIdentity(SERVER, accounts.url, {
-      requesterSenderId: GATEWAY_CLIENT_NAMES.GATEWAY_CLIENT,
-      messageChannel: "webchat",
-    });
-    seedMcpOAuthStoreForTest(shared.storeKey, {
-      tokens: { access_token: "token-shared-account", token_type: "Bearer" },
-    });
     const session = async (client: GatewayClient) =>
       (await client.request<{ key: string }>("sessions.create", { agentId: "main" })).key;
     const aliceSession = await session(alice);
@@ -443,6 +502,62 @@ it(
     );
     expect(accounts.toolCallAccounts).toEqual(["alice-account", "bob-account"]);
 
+    // Alice loses access mid-turn, after her tools were prepared and before the model calls one.
+    phase = "revoking Alice during her turn";
+    const held = model.holdNextTurn();
+    const heldRun = randomUUID();
+    await alice.request("chat.send", {
+      sessionKey: aliceSession,
+      message: "Which account am I using now?",
+      idempotencyKey: heldRun,
+    });
+    await held.entered;
+    setUserProfileRole(aliceProfileId, "denied");
+    held.release();
+    const settled = await gateway.client.request<{
+      status?: string;
+      terminalReply?: { text?: string };
+    }>("agent.wait", { runId: heldRun, timeoutMs: 30_000 }, { timeoutMs: 35_000 });
+    // The revoked turn ends without its prepared account tool reaching the server.
+    expect(settled.status).not.toBe("ok");
+    expect(settled.terminalReply?.text ?? "").not.toContain("alice-account");
+    expect(accounts.toolCallAccounts).toEqual(["alice-account", "bob-account"]);
+
+    // Verified people neither used nor replaced the backend client's own sign-in.
     await expect(readMcpOAuthCredentialsStatus(shared)).resolves.toEqual({ state: "authorized" });
+  },
+);
+
+it(
+  "keeps a shared-token backend client on the sign-in its own identity holds",
+  { timeout: 60_000 },
+  async () => {
+    const { accounts, model, tempHome, workspaceDir } = await startProof();
+    const token = `requester-proof-${randomUUID()}`;
+    const gateway = await startGatewayWithClient({
+      cfg: proofConfig({
+        workspaceDir,
+        accountsUrl: accounts.url,
+        modelBaseUrl: model.baseUrl,
+        gateway: { auth: { mode: "token", token } },
+      }),
+      configPath: await createGatewayConfigPath(tempHome),
+      token,
+      clientName: GATEWAY_CLIENT_NAMES.GATEWAY_CLIENT,
+      mode: GATEWAY_CLIENT_MODES.BACKEND,
+      scopes: ["operator.read", "operator.write"],
+    });
+    cleanups.push(async () => {
+      await disconnectGatewayClient(gateway.client);
+      await gateway.server.close({ reason: "shared requester proof complete" });
+    });
+    const session = (
+      await gateway.client.request<{ key: string }>("sessions.create", { agentId: "main" })
+    ).key;
+    // A shared token names no person, so the turn keeps the client's own requester identity.
+    expect(await ask(gateway.client, session, "Which account am I using?")).toContain(
+      "signed in as shared-account",
+    );
+    expect(accounts.toolCallAccounts).toEqual(["shared-account"]);
   },
 );

@@ -388,6 +388,8 @@ export async function materializeBundleMcpToolsForRun(params: {
   /** Transfer the lease admitted by the manager before returning this runtime. */
   releaseLease?: () => void;
   disposeRuntime?: () => Promise<void>;
+  /** Rechecked right before each sign-in or call on a requester-scoped server. */
+  assertRequesterCurrent?: () => void;
 }): Promise<BundleMcpToolRuntime> {
   const runtime = params.runtime;
   let disposal: Promise<void> | undefined;
@@ -434,6 +436,9 @@ export async function materializeBundleMcpToolsForRun(params: {
       runtime[method]
         ? (serverName) => (_toolCallId, _input, signal) =>
             runWithSessionMcpRequestSignal(signal, async () => {
+              if (runtime.isRequesterScopedServer?.(serverName)) {
+                params.assertRequesterCurrent?.();
+              }
               runtime.markUsed();
               return toJsonAgentToolResult({
                 serverName,
@@ -454,8 +459,13 @@ export async function materializeBundleMcpToolsForRun(params: {
           if (!Object.hasOwn(catalog.servers, tool.serverName)) {
             const connect = runtime.requesterConnect?.createExecute(tool.serverName);
             if (connect) {
+              params.assertRequesterCurrent?.();
               return setMcpCodeModeGuestResultFromAgentResult(await connect(toolCallId, input));
             }
+          }
+          // The requester's authority can end after acquisition; recheck at each credentialed call.
+          if (runtime.isRequesterScopedServer?.(tool.serverName)) {
+            params.assertRequesterCurrent?.();
           }
           runtime.markUsed();
           const { serverName, toolName } = tool;
