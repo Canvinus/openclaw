@@ -172,6 +172,8 @@ type MaterializeRequesterScopedMcpToolsForHarnessRunParams = {
   manifestRegistry?: Pick<PluginManifestRegistry, "plugins">;
   toolOverrides?: Pick<SessionToolOverrides, "mcpServers" | "mcpToolsDeny">;
   requesterSenderId?: string | null;
+  /** Verified Gateway profile that sent the turn; the requester ahead of the sender. */
+  requesterProfileId?: string | null;
   agentAccountId?: string | null;
   messageChannel?: string | null;
   reservedToolNames?: Iterable<string>;
@@ -248,7 +250,7 @@ function applyHarnessToolPolicy(
 export async function materializeStaticMcpToolsForHarnessRunCore(
   params: Omit<
     MaterializeRequesterScopedMcpToolsForHarnessRunParams,
-    "requesterSenderId" | "agentAccountId" | "messageChannel"
+    "requesterSenderId" | "requesterProfileId" | "agentAccountId" | "messageChannel"
   > & {
     /** Prepared native projection carries exact persisted per-tool approval grants. */
     projectedMcpServers?: CodexMcpServersConfig;
@@ -366,6 +368,7 @@ export async function materializeRequesterScopedMcpToolsForHarnessRunCore(
     manifestRegistry: params.manifestRegistry,
     toolOverrides: params.toolOverrides,
     requesterSenderId: params.requesterSenderId,
+    requesterProfileId: params.requesterProfileId,
     agentAccountId: params.agentAccountId,
     messageChannel: params.messageChannel,
     toolDenylist: policyParams.conversationCapabilityProfile?.policy.explicitToolDenylist,

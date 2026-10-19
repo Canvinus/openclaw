@@ -221,6 +221,11 @@ export type SessionMcpRuntimeManager = {
     manifestRegistry?: Pick<PluginManifestRegistry, "plugins">;
     /** Trusted sender id; required to materialize requester-scoped MCP servers. */
     requesterSenderId?: string | null;
+    /**
+     * Verified Gateway profile that sent the turn. When present it is the requester
+     * instead of the sender, keyed as MCP Apps key a profile.
+     */
+    requesterProfileId?: string | null;
     agentAccountId?: string | null;
     messageChannel?: string | null;
     toolOverrides?: Pick<SessionToolOverrides, "mcpServers" | "mcpToolsDeny">;

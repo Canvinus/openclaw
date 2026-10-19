@@ -33,8 +33,9 @@ export function resolveSessionMcpRuntimeIdleTtlMs(cfg?: OpenClawConfig): number 
 export function shouldLoadRequesterScopedMcpHarnessRuntime(params: {
   sessionId: string;
   requesterSenderId?: string | null;
+  requesterProfileId?: string | null;
 }): boolean {
-  if (params.requesterSenderId?.trim()) {
+  if (params.requesterSenderId?.trim() || params.requesterProfileId?.trim()) {
     return true;
   }
   const manager = (globalThis as Record<PropertyKey, unknown>)[SESSION_MCP_RUNTIME_MANAGER_KEY] as

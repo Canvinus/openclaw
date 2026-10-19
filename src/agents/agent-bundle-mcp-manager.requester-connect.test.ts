@@ -13,6 +13,7 @@ import {
   resetCodeModeTestState,
   runUntilCompleted,
 } from "./code-mode.test-support.js";
+import { requesterMcpOAuthIdentity } from "./mcp-oauth-identity.js";
 
 const oauthStatus = vi.hoisted(() => vi.fn());
 const startAuthorization = vi.hoisted(() => vi.fn());
@@ -165,6 +166,63 @@ describe("requester MCP connect runtime", () => {
       new Set(["calendar"]),
     );
     await connected.dispose();
+  });
+
+  it("signs each verified Gateway profile in separately through one backend sender", async () => {
+    const authorized = new Set<string>();
+    oauthStatus.mockImplementation(async (identities: Array<{ storeKey: string }>) =>
+      identities.map(({ storeKey }) => ({
+        state: authorized.has(storeKey) ? "authorized" : "unauthenticated",
+      })),
+    );
+    startAuthorization.mockImplementation(async ({ storeKey }: { storeKey: string }) => ({
+      status: "redirect",
+      authorizationUrl: `https://auth.example/authorize?state=${storeKey}`,
+    }));
+    // A backend Gateway client is the transport sender of every person it brings in.
+    const turn = (requesterProfileId?: string) => ({
+      ...request,
+      requesterSenderId: "gateway-client",
+      messageChannel: "webchat",
+      requesterProfileId,
+      cfg: { ...request.cfg, gateway: { publicOrigin: "https://gateway.example" } },
+    });
+    const toolNames = async (requesterProfileId?: string) => {
+      const runtime = await manager.getOrCreate(turn(requesterProfileId));
+      const materialized = await materializeBundleMcpToolsForRun({ runtime });
+      const names = materialized.tools.map((tool) => tool.name);
+      await materialized.dispose();
+      return names;
+    };
+    const signIn = async (requesterProfileId?: string) => {
+      const runtime = await manager.getOrCreate(turn(requesterProfileId));
+      const materialized = await materializeBundleMcpToolsForRun({ runtime });
+      expect(materialized.tools.map((tool) => tool.name)).toEqual(["calendar__connect"]);
+      const result = await materialized.tools[0]!.execute("connect", {});
+      await materialized.dispose();
+      return (result.details as { mcpConnect: { authorizationUrl: string } }).mcpConnect
+        .authorizationUrl;
+    };
+    // MCP Apps key a profile the same way, so one sign-in serves both surfaces.
+    const storeKey = (requesterSenderId: string) =>
+      requesterMcpOAuthIdentity("calendar", "https://mcp.example/rpc", {
+        requesterSenderId,
+        messageChannel: "webchat",
+      }).storeKey;
+
+    expect([await signIn("profile-a"), await signIn("profile-b"), await signIn()]).toEqual([
+      `https://auth.example/authorize?state=${storeKey("profile-a")}`,
+      `https://auth.example/authorize?state=${storeKey("profile-b")}`,
+      `https://auth.example/authorize?state=${storeKey("gateway-client")}`,
+    ]);
+    expect(
+      new Set([storeKey("profile-a"), storeKey("profile-b"), storeKey("gateway-client")]).size,
+    ).toBe(3);
+
+    authorized.add(storeKey("profile-a"));
+    expect(await toolNames("profile-a")).toEqual(["calendar__events"]);
+    expect(await toolNames("profile-b")).toEqual(["calendar__connect"]);
+    expect(await toolNames()).toEqual(["calendar__connect"]);
   });
 
   it.each(

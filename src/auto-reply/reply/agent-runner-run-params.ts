@@ -160,6 +160,7 @@ export function buildReplyRunStateParams(run: FollowupRun["run"]) {
     inputProvenance: run.inputProvenance,
     senderIsOwner: run.senderIsOwner,
     gitContributorProfileId: run.gitContributorProfileId,
+    requesterProfileId: run.requesterProfileId,
     conversationToolPolicy: run.conversationToolPolicy,
     requesterOrigin: run.requesterOrigin,
     operatorProfileId: run.operatorProfileId,
