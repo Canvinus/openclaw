@@ -18,6 +18,7 @@ import { requesterMcpOAuthIdentity } from "./mcp-oauth-identity.js";
 const oauthStatus = vi.hoisted(() => vi.fn());
 const startAuthorization = vi.hoisted(() => vi.fn());
 const toolCalls: string[] = [];
+let advertiseResourcesAndPrompts = false;
 const authorizationUrl = "https://auth.example/authorize?state=opaque";
 const request = {
   sessionId: "session-connect",
@@ -56,7 +57,12 @@ function createTestRuntime(params: Parameters<CreateSessionMcpRuntime>[0]): Sess
   const server = { serverName: "calendar", safeServerName: "calendar" };
   const catalog: McpToolCatalog = { version: 1, generatedAt: 1, servers: {}, tools: [] };
   if (params.includeServerNames?.has("calendar")) {
-    catalog.servers.calendar = { ...server, launchSummary: "calendar", toolCount: 1 };
+    catalog.servers.calendar = {
+      ...server,
+      launchSummary: "calendar",
+      toolCount: 1,
+      ...(advertiseResourcesAndPrompts ? { resources: {}, prompts: {} } : {}),
+    };
     catalog.tools.push({
       ...server,
       toolName: "events",
@@ -101,6 +107,22 @@ function createTestRuntime(params: Parameters<CreateSessionMcpRuntime>[0]): Sess
       toolCalls.push(toolName);
       return { content: [{ type: "text", text: `called:${toolName}` }], isError: false };
     },
+    listResources: async () => {
+      toolCalls.push("resources_list");
+      return { resources: [] };
+    },
+    readResource: async (_serverName, uri) => {
+      toolCalls.push(`resources_read:${uri}`);
+      return { contents: [] };
+    },
+    listPrompts: async () => {
+      toolCalls.push("prompts_list");
+      return { prompts: [] };
+    },
+    getPrompt: async (_serverName, name) => {
+      toolCalls.push(`prompts_get:${name}`);
+      return { messages: [] };
+    },
     dispose: async () => {},
     joinCleanup: async () => {},
   };
@@ -115,6 +137,7 @@ describe("requester MCP connect runtime", () => {
     startAuthorization.mockReset().mockResolvedValue({ status: "redirect", authorizationUrl });
     created.length = 0;
     toolCalls.length = 0;
+    advertiseResourcesAndPrompts = false;
     manager = createSessionMcpRuntimeManager({
       createRuntime: (params) => {
         created.push(params);
@@ -287,6 +310,57 @@ describe("requester MCP connect runtime", () => {
       content: [{ type: "text", text: "called:events" }],
     });
     await signIn.dispose();
+    await connected.dispose();
+  });
+
+  it("refuses a profile's retained resource and prompt reads once it loses the run's authority", async () => {
+    advertiseResourcesAndPrompts = true;
+    oauthStatus.mockResolvedValue([{ state: "authorized" }]);
+    let current = true;
+    const requesterProfile = {
+      profileId: "profile-a",
+      assertCurrent: () => {
+        if (!current) {
+          throw new Error("operator authority revoked");
+        }
+      },
+    };
+    const connected = await materializeBundleMcpToolsForRun({
+      ...(await manager.acquire({
+        ...request,
+        requesterSenderId: "gateway-client",
+        messageChannel: "webchat",
+        requesterProfile,
+      })),
+      assertRequesterCurrent: requesterProfile.assertCurrent,
+    });
+    const reads = [
+      ["resources_list", {}],
+      ["resources_read", { uri: "calendar://today" }],
+      ["prompts_list", {}],
+      ["prompts_get", { name: "agenda" }],
+    ] as const;
+    const read = (operation: string, input: object) =>
+      connected.tools
+        .find((tool) => tool.name === `calendar__${operation}`)!
+        .execute(operation, input);
+
+    // Utility executors read with the profile's credentials too, so they recheck it first.
+    current = false;
+    for (const [operation, input] of reads) {
+      await expect(read(operation, input)).rejects.toThrow("revoked");
+    }
+    expect(toolCalls).toEqual([]);
+    current = true;
+    for (const [operation, input] of reads) {
+      await read(operation, input);
+    }
+    expect(toolCalls).toEqual([
+      "resources_list",
+      "resources_read:calendar://today",
+      "prompts_list",
+      "prompts_get:agenda",
+    ]);
     await connected.dispose();
   });
 

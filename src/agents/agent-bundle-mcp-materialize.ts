@@ -388,7 +388,7 @@ export async function materializeBundleMcpToolsForRun(params: {
   /** Transfer the lease admitted by the manager before returning this runtime. */
   releaseLease?: () => void;
   disposeRuntime?: () => Promise<void>;
-  /** Rechecked right before each sign-in or call on a requester-scoped server. */
+  /** Rechecked right before each sign-in or credentialed request on a requester-scoped server. */
   assertRequesterCurrent?: () => void;
 }): Promise<BundleMcpToolRuntime> {
   const runtime = params.runtime;
@@ -429,6 +429,13 @@ export async function materializeBundleMcpToolsForRun(params: {
       : undefined;
     const materializedCatalog = mergeMcpConnectCatalog(catalog, runtime.requesterConnect);
     const getPrompt = runtime.getPrompt?.bind(runtime);
+    // The requester's authority can end after acquisition; every executor this returns
+    // rechecks it right before using the requester's credentials.
+    const assertRequesterCurrent = (serverName: string) => {
+      if (runtime.isRequesterScopedServer?.(serverName)) {
+        params.assertRequesterCurrent?.();
+      }
+    };
     const createListExecute = (
       method: "listResources" | "listPrompts",
       operation: "resources_list" | "prompts_list",
@@ -436,9 +443,7 @@ export async function materializeBundleMcpToolsForRun(params: {
       runtime[method]
         ? (serverName) => (_toolCallId, _input, signal) =>
             runWithSessionMcpRequestSignal(signal, async () => {
-              if (runtime.isRequesterScopedServer?.(serverName)) {
-                params.assertRequesterCurrent?.();
-              }
+              assertRequesterCurrent(serverName);
               runtime.markUsed();
               return toJsonAgentToolResult({
                 serverName,
@@ -463,10 +468,7 @@ export async function materializeBundleMcpToolsForRun(params: {
               return setMcpCodeModeGuestResultFromAgentResult(await connect(toolCallId, input));
             }
           }
-          // The requester's authority can end after acquisition; recheck at each credentialed call.
-          if (runtime.isRequesterScopedServer?.(tool.serverName)) {
-            params.assertRequesterCurrent?.();
-          }
+          assertRequesterCurrent(tool.serverName);
           runtime.markUsed();
           const { serverName, toolName } = tool;
           const invoke = () => runtime.callTool(serverName, toolName, input);
@@ -536,6 +538,8 @@ export async function materializeBundleMcpToolsForRun(params: {
           // Transport sender ids are not Gateway profiles. Keep private channel
           // views suppressed until an identity owner supplies a mapped profile.
           if (runtime.mcpAppsEnabled && tool.uiResourceUri && (!scopedServer || requesterId)) {
+            // The view is another read, and the call before it may have outlasted the authority.
+            assertRequesterCurrent(serverName);
             const allowedAppToolNames = allowedAppToolsByServer
               ? (allowedAppToolsByServer.get(serverName) ?? new Set<string>())
               : undefined;
@@ -582,6 +586,7 @@ export async function materializeBundleMcpToolsForRun(params: {
         ? (serverName) => (_toolCallId: string, input: unknown, signal?: AbortSignal) =>
             runWithSessionMcpRequestSignal(signal, async () => {
               const uri = requireStringArg(input, "uri");
+              assertRequesterCurrent(serverName);
               runtime.markUsed();
               return toJsonAgentToolResult({
                 serverName,
@@ -594,6 +599,7 @@ export async function materializeBundleMcpToolsForRun(params: {
       createPromptGetExecute: getPrompt
         ? (serverName) => (_toolCallId: string, input: unknown, signal?: AbortSignal) =>
             runWithSessionMcpRequestSignal(signal, async () => {
+              assertRequesterCurrent(serverName);
               runtime.markUsed();
               return projectMcpGetPromptResult(
                 await getPrompt(

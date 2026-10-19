@@ -409,9 +409,17 @@ export async function materializeRequesterScopedMcpToolsForHarnessRunCore(
     const advertisedTools = buildBundleMcpToolsFromCatalog({
       catalog: advertisedCatalog,
       reservedToolNames,
-      createExecute: (tool) =>
-        requesterConnect?.createExecute(tool.serverName) ??
-        (async () => notConnectedToolResult(tool.serverName, tool.toolName)),
+      createExecute: (tool) => {
+        const connect = requesterConnect?.createExecute(tool.serverName);
+        if (!connect) {
+          return async () => notConnectedToolResult(tool.serverName, tool.toolName);
+        }
+        // A remembered tool without a live counterpart starts this requester's sign-in.
+        return async (...args: Parameters<typeof connect>) => {
+          params.requesterProfile?.assertCurrent();
+          return await connect(...args);
+        };
+      },
     });
     const liveByName = new Map((liveRuntime?.tools ?? []).map((tool) => [tool.name, tool]));
     // Live tools supply execution; advertised catalog supplies the stable name/schema surface.
