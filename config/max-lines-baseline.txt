@@ -327,7 +327,6 @@ src/config/io.write-config.test.ts
 src/config/io.write-prepare.ts
 src/config/mutate.test.ts
 src/config/mutate.ts
-src/config/schema.labels.ts
 src/config/sessions/session-accessor.conformance.test.ts
 src/config/sessions/session-accessor.test.ts
 src/config/sessions/transcript.test.ts
