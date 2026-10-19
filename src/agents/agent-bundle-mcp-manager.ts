@@ -56,7 +56,7 @@ const createSessionMcpRuntimeLazy: CreateSessionMcpRuntime = async (params) => {
  * One sign-in then serves that person's chat turns and MCP Apps.
  */
 function withRequesterProfile(params: RuntimeAcquisitionParams): RuntimeAcquisitionParams {
-  const profileId = normalizeOptionalString(params.requesterProfileId);
+  const profileId = params.requesterProfile?.profileId;
   return profileId
     ? {
         ...params,
@@ -116,6 +116,9 @@ export function createSessionMcpRuntimeManager(opts: SessionMcpRuntimeManagerOpt
         return await lifecycle.runExclusiveOnRuntimeKeys(runtimeKeys, async () => {
           await Promise.all([priorDisposal, priorSessionWork].filter((work) => work !== undefined));
           store.scheduler.signal.throwIfAborted();
+          // A revoked or reassigned profile throws here, before its credentials are
+          // selected, and never falls back to the transport sender it shares.
+          params.requesterProfile?.assertCurrent();
           const reload = store.configReload;
           acquired = await acquire({
             ...params,

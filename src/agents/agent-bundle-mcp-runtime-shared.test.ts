@@ -42,7 +42,7 @@ describe("requester-scoped MCP harness preflight", () => {
     expect(
       shouldLoadRequesterScopedMcpHarnessRuntime({
         sessionId: "session-1",
-        requesterProfileId: "profile-1",
+        requesterProfile: { profileId: "profile-1" },
       }),
     ).toBe(true);
   });

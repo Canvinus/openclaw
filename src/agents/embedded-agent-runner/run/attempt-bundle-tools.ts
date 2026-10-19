@@ -138,7 +138,7 @@ export async function prepareEmbeddedAttemptBundleTools(params: {
         // leave it unset, so requester-scoped MCP stays fail-closed for those paths.
         // A verified Gateway profile, set only by Gateway chat ingress, wins over it.
         requesterSenderId: params.attempt.senderId,
-        requesterProfileId: params.attempt.requesterProfileId,
+        requesterProfile: params.attempt.requesterProfile,
         agentAccountId: params.attempt.agentAccountId,
         messageChannel: params.attempt.messageChannel ?? params.attempt.messageProvider,
       })

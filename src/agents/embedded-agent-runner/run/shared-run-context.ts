@@ -12,7 +12,6 @@ export function projectEmbeddedMessageContext(run: Partial<EmbeddedForegroundPro
     senderE164: run.senderE164,
     senderIsOwner: run.senderIsOwner,
     gitContributorProfileId: run.gitContributorProfileId,
-    requesterProfileId: run.requesterProfileId,
     approvalReviewerDeviceId: run.approvalReviewerDeviceId,
     currentChannelId: run.currentChannelId,
     chatId: run.chatId,

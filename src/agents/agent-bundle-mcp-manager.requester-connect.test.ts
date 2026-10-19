@@ -180,11 +180,11 @@ describe("requester MCP connect runtime", () => {
       authorizationUrl: `https://auth.example/authorize?state=${storeKey}`,
     }));
     // A backend Gateway client is the transport sender of every person it brings in.
-    const turn = (requesterProfileId?: string) => ({
+    const turn = (profileId?: string) => ({
       ...request,
       requesterSenderId: "gateway-client",
       messageChannel: "webchat",
-      requesterProfileId,
+      requesterProfile: profileId ? { profileId, assertCurrent() {} } : undefined,
       cfg: { ...request.cfg, gateway: { publicOrigin: "https://gateway.example" } },
     });
     const toolNames = async (requesterProfileId?: string) => {
@@ -223,6 +223,27 @@ describe("requester MCP connect runtime", () => {
     expect(await toolNames("profile-a")).toEqual(["calendar__events"]);
     expect(await toolNames("profile-b")).toEqual(["calendar__connect"]);
     expect(await toolNames()).toEqual(["calendar__connect"]);
+  });
+
+  it("selects no requester credentials once a profile loses the run's authority", async () => {
+    oauthStatus.mockResolvedValue([{ state: "authorized" }]);
+    const revoked = new Error("operator authority revoked");
+    await expect(
+      manager.getOrCreate({
+        ...request,
+        requesterSenderId: "gateway-client",
+        messageChannel: "webchat",
+        requesterProfile: {
+          profileId: "profile-a",
+          assertCurrent: () => {
+            throw revoked;
+          },
+        },
+      }),
+    ).rejects.toBe(revoked);
+    // Neither the profile's credentials nor the shared backend sender's were opened.
+    expect(created.filter((params) => params.requesterScope)).toEqual([]);
+    expect(oauthStatus).not.toHaveBeenCalled();
   });
 
   it.each(
