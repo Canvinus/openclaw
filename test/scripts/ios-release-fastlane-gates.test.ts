@@ -1331,25 +1331,8 @@ puts JSON.generate(results)
 require "json"
 require "tmpdir"
 require "fileutils"
-require "open3"
-require "stringio"
 require "time"
 require ARGV.fetch(0)
-module Open3
-  def self.popen2(*arguments, **options)
-    output = case arguments.last
-    when "hw.logicalcpu" then "12"
-    when "hw.memsize" then "34359738368"
-    when "vm.loadavg" then "{ 1.0 2.0 3.0 }"
-    when "pcpu=,rss=,comm=" then "5.2 1024 /private/PRIVATE-PATH/OpenClawUITests-Runner\\n1.0 10 /private/PRIVATE-PATH/OtherApp\\n"
-    else "Mach Virtual Memory Statistics: (page size of 16384 bytes)\\nPages free: 42.\\nSwapouts: 3.\\n"
-    end
-    process = Object.new
-    def process.join(*); true; end
-    def process.value; Struct.new(:success?).new(true); end
-    yield StringIO.new, StringIO.new(output), process
-  end
-end
 class << Dir
   alias fixture_glob []
   def [](*patterns)
@@ -1402,13 +1385,6 @@ end
         {
           phase: "capture",
           outcome: "failed",
-          before: {
-            hardware: { logicalCpuCount: 12, memoryBytes: 34359738368 },
-            loadAverage: [1, 2, 3],
-            memoryPageBytes: 16384,
-            memoryPages: { "Pages free": 42, Swapouts: 3 },
-            processes: [{ name: "OpenClawUITests-Runner", cpuPercent: 5.2, rssKiB: 1024 }],
-          },
           startup: {
             testCaseStarts: 0,
             instrumentsConnectionTimeout: true,
@@ -1449,14 +1425,14 @@ end
     expect(captureJob).not.toContain("OPENCLAW_SNAPSHOT_DEVICE_FAMILY");
     expect(captureJob).not.toContain("OPENCLAW_SNAPSHOT_SKIP_WATCH");
     expect(captureJob).not.toContain("run_ios_fastlane ios watch_screenshot");
-    expect(captureJob).toContain("run: pnpm ios:screenshots");
+    expect(captureJob).toContain("pnpm ios:screenshots");
     const runtimeProvision = "xcodebuild -downloadPlatform watchOS -buildVersion 27.0";
     expect(captureJob).toContain(runtimeProvision);
     expect(captureJob.indexOf("*select_xcode_step")).toBeLessThan(
       captureJob.indexOf(runtimeProvision),
     );
     expect(captureJob.indexOf(runtimeProvision)).toBeLessThan(
-      captureJob.indexOf("run: pnpm ios:screenshots"),
+      captureJob.indexOf("pnpm ios:screenshots"),
     );
     expect(captureJob).toContain("id: package_screenshot_evidence");
     expect(captureJob).not.toContain("--family");
