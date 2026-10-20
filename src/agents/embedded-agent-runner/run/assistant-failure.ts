@@ -24,6 +24,7 @@ import {
   resolveFailoverStatus,
 } from "../../failover-error.js";
 import { isTimeoutErrorMessage } from "../../failover/message-patterns.js";
+import { renderProviderFailureCopy } from "../../failover/provider-failure-copy.js";
 import type { PreparedProviderFailoverOwner } from "../../failover/provider-patterns.js";
 import {
   classifyRateLimitWindow,
@@ -398,13 +399,19 @@ export async function handleEmbeddedAssistantFailure(input: {
         logDecision("fallback_model", { status });
         throwFailure(
           new FailoverError(
-            "The AI service is temporarily overloaded. Please try again in a moment.",
+            // The operator's text for the provider's own error type wins here too.
+            renderProviderFailureCopy({
+              cfg: runInput.runParams.config,
+              provider: activeErrorContext.provider,
+              errorType: failedAssistant?.errorType,
+            }) ?? "The AI service is temporarily overloaded. Please try again in a moment.",
             {
               reason: "overloaded",
               provider: activeErrorContext.provider,
               model: activeErrorContext.model,
               profileId: runtime.lastProfileId,
               status,
+              errorType: failedAssistant?.errorType,
               rawError: failedAssistant?.errorMessage?.trim(),
             },
           ),

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { projectProviderError } from "../../../../packages/ai/src/utils/provider-error.js";
 import { buildKnownAgentRunFailureReplyPayload } from "../../../auto-reply/reply/agent-runner-failure-reply.js";
+import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
 import { buildRealtimeVoiceAgentErrorProviderResult } from "../../../talk/agent-run-control.js";
 import type { AgentRunAttemptTerminal } from "../../agent-run-terminal-outcome.js";
@@ -262,6 +263,65 @@ describe("assistant failure recovery", () => {
       attempts: [
         expect.objectContaining({ model: "test-model", errorType: "insufficient_balance" }),
         expect.objectContaining({ model: "fixture-next", errorType: "insufficient_balance" }),
+      ],
+    });
+  });
+
+  it("keeps the error type and the operator's copy when overload rotation reaches its cap", async () => {
+    // An overloaded provider names its own error type (synthetic); the cap hands the turn to model fallback.
+    const overloaded = { errorMessage: "529 overloaded", errorType: "overloaded_error" };
+    const capped = (assistant: Parameters<typeof makeInput>[0], cfg?: OpenClawConfig) => {
+      const input = makeInput(assistant);
+      input.overloadProfileRotations = 3;
+      input.failover.resolveAuthProfileFailureReason = () => "overloaded";
+      input.runInput.runParams.config = cfg;
+      return input;
+    };
+    const copy = "The AI service is busy right now. Try again in a minute.";
+    const cfg = {
+      models: {
+        providers: {
+          anthropic: {
+            baseUrl: "https://proxy.example.test/v1",
+            models: [],
+            failureCopy: { overloaded_error: copy },
+          },
+        },
+      },
+    } as OpenClawConfig;
+    expect(await expectFailure(capped(overloaded, cfg))).toMatchObject({
+      reason: "overloaded",
+      errorType: "overloaded_error",
+      message: `⚠️ ${copy}`,
+    });
+    expect(await expectFailure(capped(overloaded))).toMatchObject({
+      reason: "overloaded",
+      errorType: "overloaded_error",
+      message: "The AI service is temporarily overloaded. Please try again in a moment.",
+    });
+
+    // The capped provider's type stays on the last attempt, so the reply can find its copy.
+    const failure: unknown = await runWithModelFallback({
+      cfg,
+      provider: "anthropic",
+      model: "test-model",
+      manifestPlugins: [],
+      fallbacksOverride: ["anthropic/fixture-next"],
+      skipAuthProfileRuntime: true,
+      run: async (provider, model) => {
+        const outcome = await handleEmbeddedAssistantFailure(
+          capped({ ...overloaded, provider, model }, cfg),
+        );
+        throw new Error(`failure was not surfaced: ${outcome.action}`);
+      },
+    }).catch((error: unknown) => error);
+    expect(failure).toMatchObject({
+      reason: "overloaded",
+      model: "fixture-next",
+      errorType: "overloaded_error",
+      attempts: [
+        expect.objectContaining({ model: "test-model", errorType: "overloaded_error" }),
+        expect.objectContaining({ model: "fixture-next", errorType: "overloaded_error" }),
       ],
     });
   });
