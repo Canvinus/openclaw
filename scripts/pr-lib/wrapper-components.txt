@@ -1255,6 +1255,7 @@ src/infra/update-doctor-config-schema.ts
 src/infra/update-doctor-lint-schema.ts
 src/infra/update-doctor-migration-attribution.ts
 src/infra/update-doctor-result.ts
+src/infra/update-doctor-scan-receipts.ts
 src/infra/update-failure-facts-format.ts
 src/infra/update-failure-facts.ts
 src/infra/update-failure-public-codes.ts
@@ -2371,7 +2372,6 @@ packages/tool-call-repair/src/protection-fast-path.ts
 packages/tool-call-repair/src/stream-normalizer-snapshot.ts
 packages/tool-call-repair/src/stream-normalizer-suppression.ts
 packages/tool-call-repair/src/stream-normalizer.ts
-src/agents/auth-profiles/oauth-refresh-error-format.ts
 src/agents/auth-profiles/oauth-refresh-failure.ts
 src/agents/bash-tools.exec-output.ts
 src/agents/embedded-agent-helpers/image-errors.ts
