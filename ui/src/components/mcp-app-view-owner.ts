@@ -1,5 +1,5 @@
 import { PostMessageTransport } from "@modelcontextprotocol/ext-apps/app-bridge";
-import { isMcpAppViewExpiredError } from "@openclaw/gateway-protocol";
+import { isMcpAppViewExpiredError } from "@openclaw/gateway-protocol/gateway-error-details";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { raceWithTimeout } from "@openclaw/retry";
 import type { ApplicationContext } from "../app/context.ts";
@@ -48,6 +48,7 @@ export function createMcpAppView(
   host: McpAppViewElement,
   context: ApplicationContext,
   afterSettlement: (callback: () => void) => void,
+  publishState: () => void,
 ) {
   let inactive: "ended" | "reconstructed" | null = null;
   let errorState: unknown = null;
@@ -57,8 +58,6 @@ export function createMcpAppView(
   let setupAbort: AbortController | undefined;
   let requestAbort = new AbortController();
   const confirmation = createMcpAppConfirm();
-  const listeners = new Set<() => void>();
-  const publishState = () => listeners.forEach((listener) => listener());
   let started = false;
   let disposed = false;
   let retired = false;
@@ -422,10 +421,7 @@ export function createMcpAppView(
     };
   }
 
-  async function setupResources(
-    binding: McpAppBinding,
-    signal: AbortSignal,
-  ): Promise<McpAppResources> {
+  async function setupResources(binding: McpAppBinding, signal: AbortSignal): Promise<void> {
     const { sessionKey, viewId, agentId } = binding;
     let resources: McpAppResources | null = null;
     try {
@@ -708,7 +704,6 @@ export function createMcpAppView(
       });
       await bridge.sendToolResult(payload.toolResult);
       signal.throwIfAborted();
-      return createdResources;
     } catch (error) {
       await teardownResources(resources);
       throw error;
@@ -726,10 +721,6 @@ export function createMcpAppView(
     read: () => ({ inactive, error: errorState }),
     setMount: (element: HTMLDivElement) => {
       mountElement = element;
-    },
-    subscribe(notify: () => void) {
-      listeners.add(notify);
-      return () => listeners.delete(notify);
     },
   };
 }
