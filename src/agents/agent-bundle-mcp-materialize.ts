@@ -1,6 +1,5 @@
 import crypto from "node:crypto";
 import { normalizeToolParameterSchema } from "@openclaw/ai/internal/tool-schema";
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -30,14 +29,13 @@ import type {
   McpToolCatalog,
   SessionMcpRuntime,
 } from "./agent-bundle-mcp-types.js";
+import { createMcpUtilityExecutors } from "./agent-bundle-mcp-utility-executors.js";
 import {
   createMcpClientElicitationHandler,
   runWithMcpElicitationHandler,
 } from "./mcp-client-elicitation.js";
 import {
   projectMcpCallToolResult,
-  projectMcpGetPromptResult,
-  setMcpCodeModeGuestResult,
   setMcpCodeModeGuestResultFromAgentResult,
 } from "./mcp-content.js";
 import { prepareMcpAppFormUpload } from "./mcp-form-resource-upload.js";
@@ -49,9 +47,7 @@ import {
   type McpAppFormOrigin,
 } from "./mcp-ui-resource.js";
 import { recordAgentCleanupFailure } from "./run-cleanup-timeout.js";
-import type { AgentToolResult } from "./runtime/index.js";
 import { neutralizePromptControlMarkers } from "./sanitize-for-prompt.js";
-import { toToolSearchJsonSafe } from "./tool-search-json.js";
 import type { AnyAgentTool } from "./tools/common.js";
 
 const MAX_MCP_SERVER_INSTRUCTIONS_CHARS = 2_000;
@@ -110,61 +106,6 @@ function buildAppToolPolicyProjections(params: {
     tools.push(projection);
   }
   return tools.toSorted((a, b) => a.name.localeCompare(b.name));
-}
-
-function toJsonAgentToolResult(params: {
-  serverName: string;
-  operation: string;
-  value: unknown;
-}): AgentToolResult<unknown> {
-  const publicValue = toToolSearchJsonSafe(
-    params.operation === "resources_list" && Array.isArray(params.value)
-      ? { resources: params.value }
-      : params.operation === "prompts_list" && Array.isArray(params.value)
-        ? { prompts: params.value }
-        : params.value,
-  );
-  if (isRecord(publicValue)) {
-    delete publicValue._meta;
-  }
-  const result: AgentToolResult<unknown> = {
-    content: [
-      {
-        type: "text",
-        text: JSON.stringify(publicValue, null, 2),
-      },
-    ],
-    details: {
-      mcpServer: params.serverName,
-      mcpOperation: params.operation,
-      untrustedMcpOutput: true,
-    },
-  };
-  return setMcpCodeModeGuestResult(result, publicValue);
-}
-
-function requireStringArg(input: unknown, key: string): string {
-  const value = isRecord(input) ? input[key] : undefined;
-  if (typeof value !== "string") {
-    throw new Error(`${key} is required`);
-  }
-  return value;
-}
-
-function optionalStringRecordArg(input: unknown, key: string): Record<string, string> | undefined {
-  if (!input || typeof input !== "object") {
-    return undefined;
-  }
-  const value = (input as Record<string, unknown>)[key];
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return undefined;
-  }
-  const entries = Object.entries(value).toSorted(([a], [b]) => a.localeCompare(b));
-  const invalid = entries.find((entry) => typeof entry[1] !== "string");
-  if (invalid) {
-    throw new Error(`${key}.${invalid[0]} must be a string`);
-  }
-  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
 }
 
 /**
@@ -451,7 +392,6 @@ export async function materializeBundleMcpToolsForRun(params: {
       ? Array.from(params.reservedToolNames)
       : undefined;
     const materializedCatalog = mergeMcpConnectCatalog(catalog, runtime.requesterConnect);
-    const getPrompt = runtime.getPrompt?.bind(runtime);
     // The requester's authority can end after acquisition; every executor this returns
     // rechecks it right before using the requester's credentials.
     const assertRequesterCurrent = (serverName: string) => {
@@ -459,22 +399,6 @@ export async function materializeBundleMcpToolsForRun(params: {
         params.assertRequesterCurrent?.();
       }
     };
-    const createListExecute = (
-      method: "listResources" | "listPrompts",
-      operation: "resources_list" | "prompts_list",
-    ): ((serverName: string) => AnyAgentTool["execute"]) | undefined =>
-      runtime[method]
-        ? (serverName) => (_toolCallId, _input, signal) =>
-            runWithSessionMcpRequestSignal(signal, async () => {
-              assertRequesterCurrent(serverName);
-              runtime.markUsed();
-              return toJsonAgentToolResult({
-                serverName,
-                operation,
-                value: await runtime[method]?.(serverName),
-              });
-            })
-        : undefined;
     const tools = buildBundleMcpToolsFromCatalog({
       catalog: materializedCatalog,
       reservedToolNames,
@@ -609,40 +533,7 @@ export async function materializeBundleMcpToolsForRun(params: {
           }
           return agentResult;
         }),
-      createResourceListExecute: createListExecute("listResources", "resources_list"),
-      createResourceReadExecute: runtime.readResource
-        ? (serverName) => (_toolCallId: string, input: unknown, signal?: AbortSignal) =>
-            runWithSessionMcpRequestSignal(signal, async () => {
-              const uri = requireStringArg(input, "uri");
-              assertRequesterCurrent(serverName);
-              runtime.markUsed();
-              return toJsonAgentToolResult({
-                serverName,
-                operation: "resources_read",
-                value: await runtime.readResource?.(serverName, uri),
-              });
-            })
-        : undefined,
-      createPromptListExecute: createListExecute("listPrompts", "prompts_list"),
-      createPromptGetExecute: getPrompt
-        ? (serverName) => (_toolCallId: string, input: unknown, signal?: AbortSignal) =>
-            runWithSessionMcpRequestSignal(signal, async () => {
-              assertRequesterCurrent(serverName);
-              runtime.markUsed();
-              return projectMcpGetPromptResult(
-                await getPrompt(
-                  serverName,
-                  requireStringArg(input, "name"),
-                  optionalStringRecordArg(input, "arguments"),
-                ),
-                {
-                  mcpServer: serverName,
-                  mcpOperation: "prompts_get",
-                  untrustedMcpOutput: true,
-                },
-              );
-            })
-        : undefined,
+      ...createMcpUtilityExecutors(runtime, assertRequesterCurrent),
     });
     const appTools = buildAppToolPolicyProjections({
       catalog: materializedCatalog,
