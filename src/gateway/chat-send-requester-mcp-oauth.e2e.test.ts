@@ -465,7 +465,7 @@ it(
       await gateway.server.close({ reason: "requester MCP proof complete" });
     });
     // One paired backend device brings both people in, each under their own verified identity.
-    const device = loadOrCreateDeviceIdentity({ path: path.join(tempHome, "backend.sqlite") });
+    const device = loadOrCreateDeviceIdentity({ identityKey: "requester-proof-backend" });
     const pairing = await requestDevicePairing({
       deviceId: device.deviceId,
       publicKey: publicKeyRawBase64UrlFromPem(device.publicKeyPem),
