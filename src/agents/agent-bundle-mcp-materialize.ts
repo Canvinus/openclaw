@@ -462,10 +462,15 @@ export async function materializeBundleMcpToolsForRun(params: {
             runtime.appRequester ??
             captureMcpFormRequester(runtime.sessionKey);
           if (!Object.hasOwn(catalog.servers, tool.serverName)) {
-            const connect = runtime.requesterConnect?.createExecute(tool.serverName);
+            // The sign-in keeps checking the requester's authority after it starts, through the OAuth owner.
+            const connect = runtime.requesterConnect?.createExecute(tool.serverName, {
+              assertRequesterCurrent: params.assertRequesterCurrent,
+            });
             if (connect) {
               params.assertRequesterCurrent?.();
-              return setMcpCodeModeGuestResultFromAgentResult(await connect(toolCallId, input));
+              return setMcpCodeModeGuestResultFromAgentResult(
+                await connect(toolCallId, input, signal),
+              );
             }
           }
           assertRequesterCurrent(tool.serverName);

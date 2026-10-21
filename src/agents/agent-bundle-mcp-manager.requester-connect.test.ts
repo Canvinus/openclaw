@@ -364,6 +364,49 @@ describe("requester MCP connect runtime", () => {
     await connected.dispose();
   });
 
+  it("carries a profile's authority into the sign-in it starts", async () => {
+    let current = true;
+    const requesterProfile = {
+      profileId: "profile-a",
+      assertCurrent: () => {
+        if (!current) {
+          throw new Error("operator authority revoked");
+        }
+      },
+    };
+    // The OAuth owner rechecks its login lifecycle before each network and store effect; the person loses access
+    // while the sign-in waits on its lease or the provider.
+    startAuthorization.mockImplementation(
+      async (_identity: unknown, _config: unknown, opts: { login?: { assertCurrent(): void } }) => {
+        opts.login?.assertCurrent();
+        current = false;
+        opts.login?.assertCurrent();
+        return { status: "redirect", authorizationUrl };
+      },
+    );
+    const signIn = await materializeBundleMcpToolsForRun({
+      ...(await manager.acquire({
+        ...request,
+        requesterSenderId: "gateway-client",
+        messageChannel: "webchat",
+        requesterProfile,
+        cfg: { ...request.cfg, gateway: { publicOrigin: "https://gateway.example" } },
+      })),
+      assertRequesterCurrent: requesterProfile.assertCurrent,
+    });
+    const call = new AbortController();
+    await expect(signIn.tools[0]!.execute("connect", {}, call.signal)).rejects.toThrow("revoked");
+    expect(startAuthorization).toHaveBeenCalledWith(
+      expect.objectContaining({ principal: "requester", serverName: "calendar" }),
+      expect.anything(),
+      expect.objectContaining({
+        redirectUrl: "https://gateway.example/oauth/mcp/callback",
+        login: expect.objectContaining({ signal: call.signal }),
+      }),
+    );
+    await signIn.dispose();
+  });
+
   it.each(
     ["embedded", "requester"].flatMap((consumer) =>
       ["none", "removal", "origin", "retirement"].map((change) => ({ consumer, change })),

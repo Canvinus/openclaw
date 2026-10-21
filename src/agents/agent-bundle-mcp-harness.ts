@@ -410,11 +410,13 @@ export async function materializeRequesterScopedMcpToolsForHarnessRunCore(
       catalog: advertisedCatalog,
       reservedToolNames,
       createExecute: (tool) => {
-        const connect = requesterConnect?.createExecute(tool.serverName);
+        const connect = requesterConnect?.createExecute(tool.serverName, {
+          assertRequesterCurrent: params.requesterProfile?.assertCurrent,
+        });
         if (!connect) {
           return async () => notConnectedToolResult(tool.serverName, tool.toolName);
         }
-        // A remembered tool without a live counterpart starts this requester's sign-in.
+        // A remembered tool without a live counterpart starts this requester's sign-in, which keeps checking.
         return async (...args: Parameters<typeof connect>) => {
           params.requesterProfile?.assertCurrent();
           return await connect(...args);

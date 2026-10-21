@@ -89,12 +89,20 @@ async function startAccountsServer() {
   let consentingAccount: string | undefined;
   const codes = new Map<string, { account: string; challenge: string }>();
   const toolCallAccounts: string[] = [];
+  let registrations = 0;
+  let heldDiscovery: { entered: () => void; release: Promise<void> } | undefined;
   const handle = async (request: IncomingMessage, response: ServerResponse) => {
     const url = new URL(request.url ?? "/", issuer);
     if (url.pathname.startsWith("/.well-known/oauth-protected-resource")) {
       return sendJson(response, { resource: `${issuer}/mcp`, authorization_servers: [issuer] });
     }
     if (url.pathname === "/.well-known/oauth-authorization-server") {
+      if (heldDiscovery) {
+        const hold = heldDiscovery;
+        heldDiscovery = undefined;
+        hold.entered();
+        await hold.release;
+      }
       return sendJson(response, {
         issuer,
         authorization_endpoint: `${issuer}/authorize`,
@@ -107,6 +115,7 @@ async function startAccountsServer() {
       });
     }
     if (url.pathname === "/register" && request.method === "POST") {
+      registrations += 1;
       const metadata = JSON.parse(await readProviderBody(request)) as Record<string, unknown>;
       return sendJson(response, { ...metadata, client_id: `client-${randomUUID()}` }, 201);
     }
@@ -200,6 +209,14 @@ async function startAccountsServer() {
   return {
     url: `${issuer}/mcp`,
     toolCallAccounts,
+    registrations: () => registrations,
+    /** Holds the next sign-in's authorization server discovery until released. */
+    holdNextDiscovery() {
+      const entered = createDeferred();
+      const release = createDeferred();
+      heldDiscovery = { entered: () => entered.resolve(), release: release.promise };
+      return { entered: entered.promise, release: () => release.resolve() };
+    },
     /** The provider's consent page for one account, then the browser's redirect to the Gateway. */
     async consent(authorizationUrl: string, account: string, gatewayOrigin: string) {
       consentingAccount = account;
@@ -522,6 +539,38 @@ it(
     expect(settled.status).not.toBe("ok");
     expect(settled.terminalReply?.text ?? "").not.toContain("alice-account");
     expect(accounts.toolCallAccounts).toEqual(["alice-account", "bob-account"]);
+
+    // Carol loses access while her sign-in already waits on the provider: it registers no client and leaves no
+    // pending sign-in behind.
+    phase = "revoking Carol during her sign-in";
+    const carolProfileId = ensureProfileForEmail("carol@example.test").id;
+    const carol = await asPerson("carol@example.test");
+    const carolSession = await session(carol);
+    const discovery = accounts.holdNextDiscovery();
+    const registrationsBefore = accounts.registrations();
+    const carolRun = randomUUID();
+    await carol.request("chat.send", {
+      sessionKey: carolSession,
+      message: "Which account am I using?",
+      idempotencyKey: carolRun,
+    });
+    await discovery.entered;
+    setUserProfileRole(carolProfileId, "denied");
+    discovery.release();
+    const carolSettled = await gateway.client.request<{
+      status?: string;
+      terminalReply?: { text?: string };
+    }>("agent.wait", { runId: carolRun, timeoutMs: 30_000 }, { timeoutMs: 35_000 });
+    expect(carolSettled.terminalReply?.text ?? "").not.toMatch(/\/authorize\?/u);
+    expect(accounts.registrations()).toBe(registrationsBefore);
+    await expect(
+      readMcpOAuthCredentialsStatus(
+        requesterMcpOAuthIdentity(SERVER, accounts.url, {
+          requesterSenderId: carolProfileId,
+          messageChannel: "webchat",
+        }),
+      ),
+    ).resolves.toEqual({ state: "unauthenticated" });
 
     // Verified people neither used nor replaced the backend client's own sign-in.
     await expect(readMcpOAuthCredentialsStatus(shared)).resolves.toEqual({ state: "authorized" });

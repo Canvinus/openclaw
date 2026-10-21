@@ -97,7 +97,11 @@ export type RequesterMcpConnect = {
   catalog: McpToolCatalog;
   authorizedServerNames: readonly string[];
   configFingerprint: string;
-  createExecute: (serverName: string) => AnyAgentTool["execute"] | undefined;
+  /** `assertRequesterCurrent` is rechecked through the whole sign-in, before each OAuth network and store effect. */
+  createExecute: (
+    serverName: string,
+    options?: { assertRequesterCurrent?: () => void },
+  ) => AnyAgentTool["execute"] | undefined;
 };
 
 type PreparedNativeMcpServerPolicy = {

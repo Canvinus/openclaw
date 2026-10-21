@@ -497,6 +497,19 @@ describe("materializeRequesterScopedMcpToolsForHarnessRunCore", () => {
       details: { mcpConnect: { serverName: "calendar" } },
     });
     expect(startAuthorization).toHaveBeenCalledOnce();
+
+    // The sign-in itself keeps checking: losing access while it runs stops it before its next effect.
+    startAuthorization.mockImplementationOnce(
+      async (_identity: unknown, _config: unknown, opts: { login?: { assertCurrent(): void } }) => {
+        current = false;
+        opts.login?.assertCurrent();
+        return {
+          status: "redirect",
+          authorizationUrl: "https://auth.example/authorize?state=late",
+        };
+      },
+    );
+    await expect(events.execute("events", {})).rejects.toThrow("revoked");
     await result!.dispose();
   });
 
