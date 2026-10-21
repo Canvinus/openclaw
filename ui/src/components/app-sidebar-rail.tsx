@@ -1,5 +1,5 @@
 import type { JSX } from "@solidjs/web";
-import { createMemo, For, Show, onCleanup, untrack } from "solid-js";
+import { createMemo, For, Show, onSettled, untrack } from "solid-js";
 import {
   SESSION_ICON_GLYPH_IDS,
   SESSION_ICON_SVG_DATA_URL_PREFIX,
@@ -350,7 +350,7 @@ function renderRailPin(
       );
     }
   };
-  onCleanup(() => {
+  onSettled(() => () => {
     clearTimeout(press?.timer);
     if (host.sidebarMenus.railPins.get(serialized) === pin) {
       host.sidebarMenus.railPins.delete(serialized);
@@ -509,7 +509,9 @@ export function renderSidebarPages(host: AppSidebarRenderHost): JSX.Element {
   const entries = createMemo(() => {
     const result: SidebarZoneEntry[] = SIDEBAR_NAV_ROUTES.filter((route) =>
       host.sidebarMenus.isRouteEnabled(route),
-    ).map((route) => ({ type: "route", route }));
+    )
+      .toSorted((left, right) => titleForRoute(left).localeCompare(titleForRoute(right)))
+      .map((route) => ({ type: "route", route }));
     for (const key of new Set([
       ...zone().pluginTabs.keys(),
       ...host.pluginNavigation().map((entry) => entry.key),
