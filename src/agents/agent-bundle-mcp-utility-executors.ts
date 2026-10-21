@@ -51,6 +51,7 @@ function optionalStringRecordArg(input: unknown, key: string): Record<string, st
   if (!input || typeof input !== "object") {
     return undefined;
   }
+  // SAFETY: `input` is a non-null object, checked just above; its values are read as unknown.
   const value = (input as Record<string, unknown>)[key];
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return undefined;
