@@ -7,11 +7,21 @@ import { asOptionalObjectRecord } from "@openclaw/normalization-core/record-coer
 import { readNonBlankString } from "@openclaw/normalization-core/string-coerce";
 // Compiles plugin manifest schemas for validation without runtime loading.
 import { Format } from "typebox/format";
-import { Check, Compile, Pointer, type Validator as TypeBoxValidator } from "typebox/schema";
+import {
+  Check,
+  CheckContext,
+  CheckSchema,
+  Compile,
+  HasUnevaluated,
+  Pointer,
+  Stack,
+  type Validator as TypeBoxValidator,
+} from "typebox/schema";
 import { sanitizeTerminalText } from "../../packages/terminal-core/src/safe-text.js";
 import { appendAllowedValuesHint, summarizeAllowedValues } from "../config/allowed-values.js";
 import { LruCache } from "../infra/lru-cache.js";
 import { isBlockedObjectKey } from "../infra/prototype-keys.js";
+import { isDeeplyFrozenPlainData } from "../shared/immutable-data.js";
 import {
   applyJsonSchemaDefaults,
   findJsonSchemaShapeError,
@@ -20,9 +30,14 @@ import type { JsonSchemaObject } from "../shared/json-schema.types.js";
 import { parseConfigPathArrayIndex } from "../shared/path-array-index.js";
 import type { PluginOrigin } from "./plugin-origin.types.js";
 
+type SchemaValidator = {
+  Check(value: unknown): boolean;
+  Errors(value: unknown): ReturnType<TypeBoxValidator["Errors"]>;
+};
+
 type CachedValidator = {
   hasDefaults: boolean;
-  validate: TypeBoxValidator;
+  validate: SchemaValidator;
   schema: JsonSchemaValue;
 };
 
@@ -33,6 +48,7 @@ type CachedValidator = {
 export type JsonSchemaValue = JsonSchemaObject | boolean;
 
 const schemaCache = new LruCache<CachedValidator>(512);
+const immutableSchemaValidators = new WeakMap<object, CachedValidator>();
 const annotationOnlyFormats = [
   "date-time",
   "date",
@@ -92,8 +108,24 @@ function applyValidatedSourceDefaults(
   return value;
 }
 
-function compileSchema(schema: JsonSchemaValue): TypeBoxValidator {
-  return withPluginFormatSemantics(() => Compile(normalizeJsonSchemaForTypeBox(schema) as never));
+function compileSchema(schema: JsonSchemaValue): SchemaValidator {
+  return withPluginFormatSemantics(() => {
+    const validate: TypeBoxValidator = Compile(normalizeJsonSchemaForTypeBox(schema) as never);
+    const normalized = validate.Schema();
+    if (validate.IsAccelerated() || !HasUnevaluated({}, normalized)) {
+      return validate;
+    }
+    // TypeBox's fallback reuses evaluated state; each input needs its own context.
+    const stack = Stack({}, normalized);
+    return {
+      Check(value: unknown) {
+        return CheckSchema(stack, new CheckContext(), normalized, value);
+      },
+      Errors(value: unknown) {
+        return validate.Errors(value);
+      },
+    };
+  });
 }
 
 function relaxConditionalRequiredKeywords(
@@ -142,7 +174,7 @@ function withPluginFormatSemantics<T>(callback: () => T): T {
 }
 
 function checkSchemaWithCurrentFormats(
-  validate: TypeBoxValidator,
+  validate: SchemaValidator,
   value: unknown,
 ): TypeBoxValidationError[] | null {
   if (validate.Check(value)) {
@@ -364,31 +396,40 @@ export function validateJsonSchemaValue(params: {
   applyDefaults?: boolean;
   cache?: boolean;
 }): { ok: true; value: unknown } | { ok: false; errors: JsonSchemaValidationError[] } {
-  let cacheKey: string;
-  try {
-    cacheKey = JSON.stringify(params.schema);
-  } catch (error) {
-    const schemaError = findJsonSchemaShapeError(params.schema);
-    throw schemaError ? new Error(sanitizeTerminalText(`invalid schema: ${schemaError}`)) : error;
-  }
-  let cached = params.cache === false ? undefined : schemaCache.get(cacheKey);
-  if (!cached || cached.schema !== params.schema) {
-    const schemaError = findJsonSchemaShapeError(params.schema);
-    if (schemaError) {
-      throw new Error(sanitizeTerminalText(`invalid schema: ${schemaError}`));
-    }
-  }
+  const schemaObject =
+    params.cache !== false && typeof params.schema === "object" ? params.schema : undefined;
+  let cached = schemaObject ? immutableSchemaValidators.get(schemaObject) : undefined;
   if (!cached) {
-    cached = {
-      hasDefaults: schemaHasDefaults(params.schema),
-      validate: compileSchema(params.schema),
-      schema: params.schema,
-    };
-    if (params.cache !== false) {
-      schemaCache.set(cacheKey, cached);
+    let cacheKey: string;
+    try {
+      cacheKey = JSON.stringify(params.schema);
+    } catch (error) {
+      const schemaError = findJsonSchemaShapeError(params.schema);
+      throw schemaError ? new Error(sanitizeTerminalText(`invalid schema: ${schemaError}`)) : error;
     }
-  } else if (cached.schema !== params.schema) {
-    cached.schema = params.schema;
+    cached = params.cache === false ? undefined : schemaCache.get(cacheKey);
+    if (!cached || cached.schema !== params.schema) {
+      const schemaError = findJsonSchemaShapeError(params.schema);
+      if (schemaError) {
+        throw new Error(sanitizeTerminalText(`invalid schema: ${schemaError}`));
+      }
+    }
+    if (!cached) {
+      cached = {
+        hasDefaults: schemaHasDefaults(params.schema),
+        validate: compileSchema(params.schema),
+        schema: params.schema,
+      };
+      if (params.cache !== false) {
+        schemaCache.set(cacheKey, cached);
+      }
+    } else if (cached.schema !== params.schema) {
+      cached.schema = params.schema;
+    }
+    if (schemaObject && isDeeplyFrozenPlainData(schemaObject)) {
+      // Keep this owner's schema; the content LRU may later bind an equivalent mutable source.
+      immutableSchemaValidators.set(schemaObject, { ...cached, schema: schemaObject });
+    }
   }
 
   return withPluginFormatSemantics(() => {

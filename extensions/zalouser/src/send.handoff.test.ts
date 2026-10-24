@@ -10,26 +10,13 @@ import {
 } from "./send.handoff.test-support.js";
 import { createZalouserTool } from "./tool.js";
 
-const effectGate = vi.hoisted(() => ({ prepare: undefined as (() => Promise<void>) | undefined }));
-vi.mock("openclaw/plugin-sdk/fetch-runtime", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("openclaw/plugin-sdk/fetch-runtime")>();
-  return {
-    ...actual,
-    captureEffectAuthority: () => {
-      const authority = actual.captureEffectAuthority();
-      const prepare = effectGate.prepare;
-      return prepare
-        ? {
-            ...authority,
-            initiate: async <T>(effect: () => T | Promise<T>) => {
-              await prepare();
-              return authority.initiate(effect);
-            },
-          }
-        : authority;
-    },
-  };
-});
+const effectGate = await vi.hoisted(async () =>
+  (
+    await import("../../test-support/effect-preparation.test-support.js")
+  ).createEffectPreparationGate(),
+);
+// mock-isolation: Share the export-preserving factory, but keep the preparation gate suite-local.
+vi.mock("openclaw/plugin-sdk/fetch-runtime", effectGate.mockRuntime);
 
 vi.mock("./session-state.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./session-state.js")>()),
@@ -256,9 +243,13 @@ describe("Zalouser registered send handoff", () => {
     }
   });
 
-  it.each(["image upload", "upload completion", "voice HEAD"] as const)(
+  it.each([
+    ["image upload", ["/api/message/photo_original/upload"]],
+    ["upload completion", ["/api/message/asyncfile/upload"]],
+    ["voice HEAD", ["/api/message/asyncfile/upload", "/voice.aac"]],
+  ] as const)(
     "does not mark %s as visible delivery or send after its wait",
-    async (stage) => {
+    async (stage, paths) => {
       if (stage !== "image upload") {
         useAudioFixture();
       }
@@ -290,13 +281,7 @@ describe("Zalouser registered send handoff", () => {
       caller.abort(new Error("caller canceled"));
       wait.release.resolve();
       await expect(send).rejects.toThrow("caller canceled");
-      expect(harness.requests.map(({ path }) => path)).toEqual(
-        stage === "image upload"
-          ? ["/api/message/photo_original/upload"]
-          : stage === "upload completion"
-            ? ["/api/message/asyncfile/upload"]
-            : ["/api/message/asyncfile/upload", "/voice.aac"],
-      );
+      expect(harness.requests.map(({ path }) => path)).toEqual(paths);
     },
   );
 

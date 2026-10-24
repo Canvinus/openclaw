@@ -1,5 +1,6 @@
 import { expect, it, onTestFinished, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
+import { listStoredChatOutboxes } from "../../lib/chat/outbox-store-projection.ts";
 import { captureChatOutboxAdmission } from "../../lib/chat/outbox-store.ts";
 import { createTestGatewayClient } from "../../test-helpers/gateway-client.ts";
 import {
@@ -18,10 +19,7 @@ import { chatOutboxOwner } from "./chat-outbox-owner.ts";
 import { removeQueuedMessage, updateQueuedMessage } from "./chat-queue.ts";
 import { resumeStoredChatOutboxes, retryQueuedChatMessage } from "./chat-send-actions.ts";
 import { handleSendChat } from "./chat-send-submit.ts";
-import {
-  listStoredChatOutboxes,
-  updateStoredChatComposerQueueItems,
-} from "./composer-persistence.ts";
+import { updateStoredChatComposerQueueItems } from "./composer-queue-persistence.ts";
 import { admitInitialTurnHandoff } from "./initial-turn-handoff-admission.ts";
 import { useChatSendBrowserFixture } from "./outbox-browser.test-support.ts";
 
@@ -85,6 +83,7 @@ it.each([
     } = custodyHost(
       {
         chatMessage: "Only unsaved copy",
+        currentSessionId: "volatile-original-session",
         requestHandlers: {
           "chat.send": (params: unknown) => {
             const payload = requireRecord(params, "memory send");
@@ -105,7 +104,7 @@ it.each([
     const original = host.chatQueue[0]!;
     expect(host).toMatchObject({
       chatMessage: "",
-      chatQueue: [{ text: "Only unsaved copy", sendState: "unconfirmed", sendAttempts: 1 }],
+      chatQueue: [{ text: "Only unsaved copy", sendState: "waiting-reconnect", sendAttempts: 1 }],
     });
     expect(originalOwner.hasVolatile(host, original.id)).toBe(true);
     select("owner-b");
@@ -119,7 +118,7 @@ it.each([
         id: original.id,
         text: original.text,
         sendRunId: original.sendRunId,
-        sendState: "unconfirmed",
+        sendState: "held",
       },
     ]);
     await resumeStoredChatOutboxes(host);

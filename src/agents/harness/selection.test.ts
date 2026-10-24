@@ -21,10 +21,6 @@ import {
   rotateAgentRunRegistryLifecycleGeneration,
 } from "../../infra/agent-run-registry.js";
 import { sha256HexPrefixCore } from "../../infra/crypto-digest.js";
-import {
-  claimHeartbeatOutcomeForRun,
-  persistHeartbeatOutcome,
-} from "../../infra/heartbeat-outcome-store.js";
 import { createOpenClawCodingTools } from "../../plugin-sdk/agent-harness.js";
 import { createPluginRecord } from "../../plugins/loader-records.js";
 import { getActivePluginRegistry } from "../../plugins/runtime.js";
@@ -84,6 +80,7 @@ import { getGatewayToolCallerIdentity } from "../tools/gateway-caller-context.js
 import { callGatewayTool } from "../tools/gateway.js";
 import type { SystemAgentToolOptions } from "../tools/system-agent-tool.js";
 import { assembleHarnessContextEngine } from "./context-engine-lifecycle.js";
+import { createContextEngineRequiringAssembly } from "./context-engine-lifecycle.test-support.js";
 import type { ContextEngineLogicalTurnLease } from "./context-engine-logical-turn.js";
 import { prepareAgentHarnessNativeToolPolicyRestricted } from "./execution-environment.js";
 import { resolveAgentHarnessPolicy } from "./policy.js";
@@ -100,8 +97,10 @@ import {
   selectAgentHarness,
   selectAgentHarnessForPreparedModelProviders,
 } from "./selection.js";
+import { registerSelectionQueueInputCases } from "./selection.queue-input.cases.js";
 import {
   createHarnessAttemptParams,
+  createAttemptResult,
   createHarnessCompactionFixture,
   privateHarnessParamCases,
   withOwnedHarnessGeneration,
@@ -299,24 +298,6 @@ function createAttemptParams(config?: OpenClawConfig): EmbeddedRunAttemptParams 
   return createHarnessAttemptParams(selectionAdmittedRunContext, config);
 }
 
-function createAttemptResult(sessionIdUsed: string): EmbeddedRunAttemptResult {
-  return {
-    terminal: { kind: "ok" },
-    sessionIdUsed,
-    messagesSnapshot: [],
-    assistantTexts: [`${sessionIdUsed} ok`],
-    toolMetas: [],
-    lastAssistant: undefined,
-    didSendViaMessagingTool: false,
-    messagingToolSentTexts: [],
-    messagingToolSentMediaUrls: [],
-    messagingToolSentTargets: [],
-    cloudCodeAssistFormatError: false,
-    replayMetadata: { hadPotentialSideEffects: false, replaySafe: true },
-    itemLifecycle: { startedCount: 0, completedCount: 0, activeCount: 0 },
-  };
-}
-
 function createTranscriptAnchor(
   entryId: string,
   rawSeq: number,
@@ -345,31 +326,6 @@ function createFinalAssistant(): NonNullable<EmbeddedRunAttemptResult["lastAssis
     usage: createZeroUsageFixture(),
     stopReason: "stop",
     timestamp: 0,
-  };
-}
-
-function createContextEngineRequiringAssembly(): ContextEngine {
-  // Selection tests use this to prove fallback cannot cross into a harness
-  // that lacks required context-engine host capabilities.
-  return {
-    info: {
-      id: "lossless-claw",
-      name: "Lossless",
-      hostRequirements: {
-        "agent-run": {
-          requiredCapabilities: ["assemble-before-prompt"],
-        },
-      },
-    },
-    async ingest() {
-      return { ingested: true };
-    },
-    async assemble({ messages }) {
-      return { messages, estimatedTokens: 0 };
-    },
-    async compact() {
-      return { ok: true, compacted: false };
-    },
   };
 }
 
@@ -560,6 +516,8 @@ function registerTestCompactor(
 }
 
 describe("runAgentHarnessAttempt", () => {
+  registerSelectionQueueInputCases({ createAttemptParams });
+
   it.each(["close", "abort", "lifecycle replacement"] as const)(
     "revokes retained settled-turn callbacks after %s",
     async (revocation) => {
@@ -642,65 +600,6 @@ describe("runAgentHarnessAttempt", () => {
     },
   );
 
-  it("carries silent heartbeat outcome into the plugin host boundary exactly once per retry", async () => {
-    const harnessId = "codex";
-    const root = trajectoryTempDirs.make("harness-heartbeat-outcome-");
-    vi.stubEnv("OPENCLAW_STATE_DIR", root);
-    const target = {
-      agentId: "main",
-      sessionId: "session-1",
-      sessionKey: "agent:main:main",
-      storePath: path.join(root, "agent.sqlite"),
-    };
-    await replaceSessionEntry(target, { sessionId: target.sessionId, updatedAt: 1 });
-    await persistHeartbeatOutcome({
-      ...target,
-      runSessionKey: "agent:main:main:heartbeat",
-      occurredAt: 1,
-      response: { outcome: "done", notify: false, summary: "ISOLATED_OUTCOME_731" },
-    });
-    const runAttempt = vi.fn<AgentHarness["runAttempt"]>(async () => createAttemptResult("native"));
-    registerHarness({ runAttempt });
-    const currentInboundContext = {
-      text: "Current quoted reply",
-      resumableText: "Current room delta",
-      promptJoiner: "\n" as const,
-      fragments: [{ kind: "conversation-data" as const, text: "Current quoted reply" }],
-    };
-    const params = {
-      ...createAttemptParams(),
-      ...target,
-      sessionTarget: target,
-      trigger: "user" as const,
-      agentHarnessId: harnessId,
-      currentInboundContext,
-    };
-    for (let retry = 0; retry < 2; retry++) {
-      await runAgentHarnessAttempt(params);
-      const received = runAttempt.mock.calls.at(-1)?.[0];
-      expect(received?.currentInboundContext?.text.match(/ISOLATED_OUTCOME_731/g)).toHaveLength(1);
-      expect(
-        received?.currentInboundContext?.resumableText?.match(/ISOLATED_OUTCOME_731/g),
-      ).toHaveLength(1);
-      expect(received?.currentInboundContext?.promptJoiner).toBe("\n");
-      const fragments = received?.currentInboundContext?.fragments;
-      expect(fragments).toEqual([
-        ...currentInboundContext.fragments,
-        { kind: "heartbeat-outcome", text: expect.stringContaining("ISOLATED_OUTCOME_731") },
-      ]);
-      expect(JSON.stringify(fragments)).toContain("ISOLATED_OUTCOME_731");
-      expect(received?.prompt).toBe("hello");
-      expect(params.currentInboundContext).toEqual(currentInboundContext);
-      expect(currentInboundContext.text).toBe("Current quoted reply");
-    }
-    expect(JSON.stringify(await loadTranscriptEvents(target))).not.toContain(
-      "ISOLATED_OUTCOME_731",
-    );
-    expect(
-      await claimHeartbeatOutcomeForRun({ ...target, runId: "later-user-run" }),
-    ).toBeUndefined();
-  });
-
   it("carries a runtime-event completion result into the plugin harness inbound context", async () => {
     const runAttempt = vi.fn<AgentHarness["runAttempt"]>(async () => createAttemptResult("native"));
     registerHarness({ runAttempt });
@@ -740,35 +639,6 @@ describe("runAgentHarnessAttempt", () => {
       kind: "conversation-data",
       text: expect.stringContaining("CHILD_RESULT_A_DONE"),
     });
-  });
-
-  it("does not consume silent heartbeat context for an aborted host attempt", async () => {
-    const root = trajectoryTempDirs.make("harness-heartbeat-control-");
-    vi.stubEnv("OPENCLAW_STATE_DIR", root);
-    const target = {
-      agentId: "main",
-      sessionId: "session-1",
-      sessionKey: "agent:main:main",
-      storePath: path.join(root, "agent.sqlite"),
-    };
-    await replaceSessionEntry(target, { sessionId: target.sessionId, updatedAt: 1 });
-    await persistHeartbeatOutcome({
-      ...target,
-      runSessionKey: "agent:main:main:heartbeat",
-      occurredAt: 1,
-      response: { outcome: "done", notify: false, summary: "Retained outcome" },
-    });
-    const params = {
-      ...createAttemptParams(),
-      ...target,
-      sessionTarget: target,
-      trigger: "user" as const,
-      abortSignal: AbortSignal.abort(),
-    };
-    await expect(runAgentHarnessAttempt(params)).rejects.toThrow();
-    expect((await claimHeartbeatOutcomeForRun({ ...target, runId: "next-user" }))?.summary).toBe(
-      "Retained outcome",
-    );
   });
 
   it.each(["workspace", "explicit cwd"] as const)(
@@ -1205,7 +1075,7 @@ describe("runAgentHarnessAttempt", () => {
     async ({ boundary, selection, ownership }) => {
       const admission = {
         ...createTranscriptAnchor("user-1", 1, 0),
-        logicalTurnId: "heartbeat-turn",
+        logicalTurnId: "scheduled-turn",
         role: "user" as const,
       };
       const terminal = createTranscriptAnchor("assistant-1", 2, 1);
@@ -1232,7 +1102,7 @@ describe("runAgentHarnessAttempt", () => {
         sessionKey: admission.sessionKey,
         storePath: admission.storePath,
       };
-      params.bootstrapContextRunKind = "heartbeat";
+      params.bootstrapContextRunKind = "cron";
       params.model = { ...params.model, contextWindow: 180_000 };
       params.modelContextWindow = 200_000;
       params.contextTokenBudget = 180_000;
@@ -1260,7 +1130,6 @@ describe("runAgentHarnessAttempt", () => {
         expect(onContextEngineTurnCandidate).toHaveBeenCalledWith(
           expect.objectContaining({
             boundary: { admission, terminal },
-            isHeartbeat: true,
             promptError: false,
             aborted: false,
             yieldAborted: false,
@@ -1656,7 +1525,6 @@ describe("runAgentHarnessAttempt", () => {
       contextEngineTurnAttemptMocks.drainPendingContextEngineTurnsBeforeRun,
     ).toHaveBeenCalledWith({
       admission,
-      isHeartbeat: false,
       lease,
       recorder: params.userTurnTranscriptRecorder,
       sessionTarget: undefined,

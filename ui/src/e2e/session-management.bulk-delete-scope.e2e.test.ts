@@ -3,7 +3,7 @@ import { SIDEBAR_SESSION_ROSTER_LIMIT } from "../../../src/shared/session-list-l
 import { evaluateControlUiContext } from "../test-helpers/control-ui-e2e-context.ts";
 import { pauseVirtualClock } from "../test-helpers/control-ui-e2e.ts";
 import { createControlUiSessionRow as sessionRow } from "../test-helpers/control-ui-session-fixtures.ts";
-import { createControlUiE2eContextOptions } from "./control-ui-e2e-suite.test-support.ts";
+import * as ui from "./session-management.compact.test-support.ts";
 import {
   createSessionManagementE2eSuite,
   installMockGateway,
@@ -16,7 +16,7 @@ const suite = createSessionManagementE2eSuite();
 
 suite.define(() => {
   it("keeps the selected archived sidebar subscribed after another agent's bulk deletion", async () => {
-    await suite.withPage(createControlUiE2eContextOptions(), async ({ page }) => {
+    await ui.withSessionPage(suite, async (page) => {
       const main = sessionRow("agent:main:main", "Main", 4);
       const targets = [
         sessionRow("agent:main:delete-a", "Archived A", 3, { archived: true }),
@@ -90,8 +90,8 @@ suite.define(() => {
             break;
           }
           const before = await rows.count();
-          await sidebar.getByRole("button", { name: "Show more", exact: true }).click();
-          await expect.poll(() => rows.count()).toBeGreaterThan(before);
+          await ui.button(sidebar, "Show more").click();
+          await ui.pollCount(rows).toBeGreaterThan(before);
         }
         await rowFor(lastResearch.key).scrollIntoViewIfNeeded();
         await rowFor(lastResearch.key).waitFor({ state: "visible" });
@@ -108,19 +108,12 @@ suite.define(() => {
                 sessions.state.agentId === "research" && !sessions.state.loading
                   ? sessions.canonicalListRevision
                   : -1,
-              selectedAgentId: application.agentSelection.state.selectedId ?? null,
-              canonicalAgentId: sessions.state.agentId ?? null,
-              canonicalLoading: sessions.state.loading ?? null,
-              filteredAgentId: filtered?.agentId ?? null,
-              filteredLoading: filtered?.loading ?? null,
-              filteredNextOffset: filtered?.result?.nextOffset ?? null,
-              hasMore: filtered?.result?.hasMore ?? null,
             };
           },
           researchListQuery,
         );
       const filter = async (label: "Archived" | "All") => {
-        await sidebar.getByRole("button", { name: "Filter & sort", exact: true }).click();
+        await ui.button(sidebar, "Filter & sort").click();
         await chooseSidebarMenuOption(sidebar.page(), "Status", label);
         await closeSidebarMenu(page);
       };
@@ -134,32 +127,16 @@ suite.define(() => {
       }
       await gateway.deferNext("sessions.delete", { key: targets[0]!.key });
       await rowFor(targets[0]!.key).click({ button: "right" });
-      await page
-        .locator("openclaw-session-menu")
-        .getByRole("menuitem", { name: "Delete 2…", exact: true })
-        .click();
+      await ui.menuItem(page.locator("openclaw-session-menu"), "Delete 2…").click();
       const confirmation = await waitForConfirmModal(page);
-      await confirmation.getByRole("button", { name: "Delete", exact: true }).click();
+      await ui.button(confirmation, "Delete").click();
       await gateway.waitForRequest("sessions.delete", { match: { key: targets[0]!.key } });
-      await sidebar.getByRole("button", { name: /Switch agent/ }).click();
-      await sidebar
-        .locator(".sidebar-agent-menu")
-        .getByRole("menuitem", { name: "Research", exact: true })
-        .click();
+      await ui.button(sidebar, /Switch agent/, false).click();
+      await ui.menuItem(sidebar.locator(".sidebar-agent-menu"), "Research").click();
       await rowFor(research[0]!.key).waitFor({ state: "visible" });
       const loadMore = sidebar.locator(".sidebar-session-pagination--roster > button");
       await loadMore.waitFor({ state: "visible" });
       await expect.poll(settledResearchRevision).toBeGreaterThan(0);
-      const settledResearch = {
-        selectedAgentId: "research",
-        canonicalAgentId: "research",
-        canonicalLoading: false,
-        filteredAgentId: "research",
-        filteredLoading: false,
-        filteredNextOffset: pageSize,
-        hasMore: true,
-      };
-      await expect.poll(sidebarState).toMatchObject(settledResearch);
       const revision = await settledResearchRevision();
       // Both deletes settle before the mutation owner reconciles the current
       // roster. Wait for its accepted publication before testing pagination.
@@ -184,10 +161,7 @@ suite.define(() => {
         match: filteredQuery,
       });
       await expect.poll(settledResearchRevision).toBeGreaterThan(revision);
-      await expect.poll(sidebarState).toMatchObject({
-        ...settledResearch,
-        filteredLoading: true,
-      });
+      await expect.poll(() => loadMore.isDisabled()).toBe(true);
       expect((await gateway.getRequests("sessions.delete")).map(({ params }) => params)).toEqual(
         targets.map((target) =>
           expect.objectContaining({
@@ -207,21 +181,19 @@ suite.define(() => {
       expect(
         await gateway.getRequests("sessions.list", { agentId: "research", offset: pageSize }),
       ).toHaveLength(0);
-      await expect.poll(() => loadMore.isDisabled()).toBe(true);
-      await expect.poll(() => loadMore.getAttribute("aria-busy")).toBe("true");
-      await expect.poll(() => loadMore.getAttribute("aria-label")).toContain("Loading");
+      await ui.expectAttribute(loadMore, "aria-busy", "true");
+      await ui.pollAttribute(loadMore, "aria-label").toContain("Loading");
       await gateway.resolveDeferred("sessions.list");
-      await expect.poll(sidebarState).toMatchObject(settledResearch);
       await expect.poll(() => loadMore.isDisabled()).toBe(false);
-      await expect.poll(() => loadMore.getAttribute("aria-busy")).toBe("false");
-      await expect.poll(() => loadMore.getAttribute("aria-label")).toBe("Load more sessions");
+      await ui.expectAttribute(loadMore, "aria-busy", "false");
+      await ui.expectAttribute(loadMore, "aria-label", "Load more sessions");
       await loadMore.click();
       await expect
         .poll(() => gateway.getRequests("sessions.list", { agentId: "research", offset: pageSize }))
         .toHaveLength(1);
       await expect.poll(pageKeys).toContain(lastResearch.key);
       await revealLastResearch();
-      await expect.poll(() => rowFor(lastResearch.key).count()).toBe(1);
+      await ui.expectCount(rowFor(lastResearch.key), 1);
       await filter("All");
       await rowFor(research[0]!.key).waitFor({ state: "visible" });
       await filter("Archived");

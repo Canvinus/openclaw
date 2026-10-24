@@ -1,13 +1,11 @@
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core/expect";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import {
-  createAdmittedRunOperatorAuthority,
-  prepareSystemAgentRunAdmission,
-} from "../../agents/admitted-run-context.js";
+import { prepareSystemAgentRunAdmission } from "../../agents/admitted-run-context.js";
 import { createHarnessCompletionSourceAssertion } from "../../agents/agent-harness-completion-recovery.js";
 import { claimAgentSessionWriter } from "../../agents/embedded-agent-runner/run/session-bootstrap.js";
 import { renderStorageFailureSummary } from "../../agents/failover/assistant-request-failure-copy.js";
+import { createOperatorRecoveryAuthority } from "../../agents/operator-recovery.test-support.js";
 import {
   clearRuntimeConfigSnapshot,
   setRuntimeConfigSnapshot,
@@ -140,28 +138,7 @@ it("keeps an authenticated peer follow-up internal while retaining its operator 
     const scope = recoveryScope(state.sessionsDir(), "peer-target");
     const entry: InternalSessionEntry = { sessionId: "peer-session", updatedAt: 1 };
     await using actor = await createRecoveryControllerFixture(scope, entry);
-    const operatorAuthority = createAdmittedRunOperatorAuthority({
-      profileId: "peer-operator",
-      scopes: ["operator.read"],
-      assertCurrent() {},
-      recoverySnapshot: {
-        profileId: "peer-operator",
-        scopes: ["operator.read"],
-        assignedRole: null,
-        githubLogin: null,
-        grant: null,
-        aliasBindingIds: [],
-        authPolicy: {
-          generation: "",
-          grantGeneration: "peer-grant",
-          role: "operator",
-          authMethod: "token",
-        },
-        controlUiAdmin: false,
-        localOperator: false,
-        sourceIngress: "control-ui",
-      },
-    });
+    const operatorAuthority = createOperatorRecoveryAuthority("peer-operator", "peer-grant");
 
     const controller = actor.controller({
       admissionRunId: "peer-run",
@@ -384,8 +361,10 @@ it.each([
           expect(failure).toHaveProperty("message", error);
           if (outcome === "unknown") {
             expect(failure).toHaveProperty("code", "outcome-unknown");
-            expect(renderStorageFailureSummary(classifyGatewayStorageFailure(failure))).toBe(
-              "OpenClaw couldn't save your conversation because the disk is full. Free up space on the computer running OpenClaw before continuing.",
+            const storageOutcome = classifyGatewayStorageFailure(failure);
+            expect(storageOutcome).toBe("session_actor_reconciliation");
+            expect(renderStorageFailureSummary(storageOutcome)).toMatch(
+              /check.*history.*before trying again/i,
             );
           }
           await expect(claimWriter()).rejects.toThrow(error);
