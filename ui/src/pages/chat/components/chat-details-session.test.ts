@@ -12,6 +12,8 @@ import {
   createTestGatewayClient,
 } from "../../../test-helpers/gateway-client.ts";
 import { mountSolid } from "../../../test-helpers/mount-solid.ts";
+import { restorePropertyDescriptor } from "../../../test-helpers/property-descriptor.ts";
+import { createActiveSessionPlacement } from "../../../test-helpers/session-placement.ts";
 import { flush, waitForSolid } from "../../../test-helpers/solid-settle.ts";
 import { ChatContextPanel } from "./chat-context-panel.tsx";
 import { ChatDetailsEnvironmentMobile } from "./chat-details-environment-mobile.tsx";
@@ -538,19 +540,14 @@ it("demands mobile changes only while presented and retires native navigation ca
   setSession({
     key: "agent:main:details",
     kind: "direct",
-    placement: {
-      state: "active",
-      generation: 1,
+    placement: createActiveSessionPlacement({
       createdAtMs: 100_000,
       updatedAtMs: 300_000,
       stateChangedAtMs: 300_000,
-      environmentId: "worker:device",
-      activeOwnerEpoch: 1,
-      workerBundleHash: "a".repeat(64),
       workspaceBaseManifestRef: "base-manifest",
       remoteWorkspaceDir: "/worker/repo",
       runner: { kind: "device", status: "available" },
-    },
+    }),
   });
   flush();
   const buttons = Array.from(view.container.querySelectorAll<HTMLButtonElement>("button"));
@@ -593,8 +590,10 @@ it.each([false, true])(
     element.desktop = desktop;
     await element.updateComplete;
     const environment = element.querySelector('[data-details-group="environment"]')!;
+    await waitForSolid(() =>
+      expect(environment.querySelector("button.chat-pr__create")?.textContent).toBe("Create PR"),
+    );
     const create = environment.querySelector<HTMLButtonElement>("button.chat-pr__create");
-    expect(create?.textContent).toBe("Create PR");
     expect(environment.textContent).toContain("+7");
     expect(environment.textContent).toContain("−2");
     expect(
@@ -699,14 +698,18 @@ it("keeps unresolved publication recovery and a different unpublished branch ava
     }),
   };
   await element.updateComplete;
-  expect(environment.querySelector(".chat-pr__create")?.textContent).toBe("Check publication");
+  await waitForSolid(() =>
+    expect(environment.querySelector(".chat-pr__create")?.textContent).toBe("Check publication"),
+  );
   element.props = {
     ...element.props!,
     githubPublication: failed,
     pullRequestsBranch: sessionBranch({ branch: "feature/next", additions: 3 }),
   };
   await element.updateComplete;
-  expect(environment.querySelector(".chat-pr__create")?.textContent).toBe("Retry");
+  await waitForSolid(() =>
+    expect(environment.querySelector(".chat-pr__create")?.textContent).toBe("Retry"),
+  );
   expect(environment.querySelector(".chat-pr__diff")?.textContent).toContain("+3");
 });
 
@@ -739,11 +742,7 @@ it.each([false, true])(
     );
     onTestFinished(() => {
       view.unmount();
-      if (animate) {
-        Object.defineProperty(Element.prototype, "animate", animate);
-      } else {
-        Reflect.deleteProperty(Element.prototype, "animate");
-      }
+      restorePropertyDescriptor(Element.prototype, "animate", animate);
     });
     const row = () =>
       [...view.container.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
