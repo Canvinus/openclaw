@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { awaitGateBeforeSettlement, createDeferred } from "../../test/helpers/promise.js";
 import { executeMcpAppOperation } from "../gateway/mcp-app-operations.js";
+import { catalogTool } from "./agent-bundle-mcp-fixture.test-support.js";
 import type { McpToolCatalog, SessionMcpRuntime } from "./agent-bundle-mcp-types.js";
 import { getMcpAppViewLease } from "./mcp-ui-resource.js";
 import { testing as mcpUiResourceTesting } from "./mcp-ui-resource.test-support.js";
@@ -125,21 +126,6 @@ function makeStaticRuntime(sessionId: string) {
     releaseLease: runtime.acquireLease?.() ?? (() => {}),
   });
   return runtime;
-}
-
-function catalogTool(
-  serverName: string,
-  toolName: string,
-  overrides: Partial<McpToolCatalog["tools"][number]> = {},
-): McpToolCatalog["tools"][number] {
-  return {
-    serverName,
-    safeServerName: serverName,
-    toolName,
-    inputSchema: { type: "object", properties: {} },
-    fallbackDescription: toolName,
-    ...overrides,
-  };
 }
 
 function resolveRequesterRuntime() {
@@ -538,6 +524,9 @@ describe("materializeRequesterScopedMcpToolsForHarnessRunCore", () => {
   });
 
   it("keeps advertised specs stable and returns not-connected for unauthed senders", async () => {
+    const specs = (
+      tools: NonNullable<Awaited<ReturnType<typeof requesterTools>>>["advertisedTools"],
+    ) => tools.map(({ name, description, parameters }) => ({ name, description, parameters }));
     mocks.setResolveImpl(async (params) => {
       const senderId = params.requesterSenderId;
       if (senderId !== "authed") {
@@ -548,11 +537,7 @@ describe("materializeRequesterScopedMcpToolsForHarnessRunCore", () => {
 
     const authed = await fullPermissionTools("session-stable", "authed");
     const advertisedNames = authed!.advertisedTools.map((tool) => tool.name);
-    const advertisedSpecs = authed!.advertisedTools.map(({ name, description, parameters }) => ({
-      name,
-      description,
-      parameters,
-    }));
+    const advertisedSpecs = specs(authed!.advertisedTools);
     expect(advertisedNames).toEqual(["user-mail__inbox"]);
 
     const live = await authed!.tools[0]!.execute("c1", {});
@@ -571,13 +556,7 @@ describe("materializeRequesterScopedMcpToolsForHarnessRunCore", () => {
     });
     const busy = await fullPermissionTools("session-stable", "busy");
     expect(busy).toBeDefined();
-    expect(
-      busy!.advertisedTools.map(({ name, description, parameters }) => ({
-        name,
-        description,
-        parameters,
-      })),
-    ).toEqual(advertisedSpecs);
+    expect(specs(busy!.advertisedTools)).toEqual(advertisedSpecs);
     const unavailableResult = await busy!.tools[0]!.execute("busy-call", {});
     expect(unavailableResult.details).toMatchObject({ status: "error" });
     expect(unavailableCall).not.toHaveBeenCalled();
@@ -596,13 +575,7 @@ describe("materializeRequesterScopedMcpToolsForHarnessRunCore", () => {
     await guest!.dispose();
 
     const recovered = await fullPermissionTools("session-stable", "authed");
-    expect(
-      recovered!.advertisedTools.map(({ name, description, parameters }) => ({
-        name,
-        description,
-        parameters,
-      })),
-    ).toEqual(advertisedSpecs);
+    expect(specs(recovered!.advertisedTools)).toEqual(advertisedSpecs);
     await recovered!.dispose();
   });
 

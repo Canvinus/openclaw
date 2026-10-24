@@ -11,9 +11,13 @@ import {
   clearRuntimeConfigSnapshot,
   setRuntimeConfigSnapshot,
 } from "openclaw/plugin-sdk/runtime-config-snapshot";
-import { readSessionTranscriptEvents } from "openclaw/plugin-sdk/session-transcript-runtime";
+import {
+  appendSessionTranscriptMessageByIdentity,
+  readSessionTranscriptEvents,
+} from "openclaw/plugin-sdk/session-transcript-runtime";
 import { useSqliteWorkerFault } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { makeUserMessage } from "../../test-support/message-fixtures.test-support.js";
 import {
   createFixture,
   createJournalSession,
@@ -172,11 +176,7 @@ describe("Copilot attempt transcript journal", () => {
 
   it("replaces the originally staged user when async resolution changes it", async () => {
     const { journal, recorder } = await createFixture();
-    recorder.resolveMessage.mockResolvedValue({
-      role: "user",
-      content: "resolved user",
-      timestamp: 2,
-    });
+    recorder.resolveMessage.mockResolvedValue(makeUserMessage("resolved user", 2));
 
     await journal.persistInitialUser();
 
@@ -288,11 +288,7 @@ describe("Copilot attempt transcript journal", () => {
       ]),
     );
     const { journal, recorder } = await createFixture();
-    recorder.resolveMessage.mockResolvedValue({
-      role: "user",
-      content: "blocked resolved user",
-      timestamp: 2,
-    });
+    recorder.resolveMessage.mockResolvedValue(makeUserMessage("blocked resolved user", 2));
 
     await journal.persistInitialUser();
 
@@ -1083,6 +1079,27 @@ describe("Copilot attempt transcript journal", () => {
     expect(hook).toHaveBeenCalledTimes(3);
     expect(transcriptMessages(await readSessionTranscriptEvents(target))).toHaveLength(3);
     expect(replayJournal.snapshot().messagesSnapshot).toHaveLength(3);
+  });
+
+  it("rejects a partial persisted tool group before running group hooks", async () => {
+    const { journal, session, target } = await createInitializedFixture();
+    await appendSessionTranscriptMessageByIdentity({
+      ...target,
+      eventId: "assistant-replay",
+      message: {
+        role: "assistant",
+        content: [],
+        idempotencyKey: "copilot-sdk:sdk-session:assistant-replay",
+      },
+    });
+    const hook = vi.fn(() => undefined);
+    initializeGlobalHookRunner(
+      createMockPluginRegistry([{ hookName: "before_message_write", handler: hook }]),
+    );
+    emitReplayGroup(session);
+    await expect(journal.barrier("partial group")).rejects.toThrow("partial persisted tool group");
+    expect(hook).not.toHaveBeenCalled();
+    expect(transcriptMessages(await readSessionTranscriptEvents(target))).toHaveLength(2);
   });
 
   it("rolls back the complete group when SQLite fails mid-group", async () => {

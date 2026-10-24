@@ -10,6 +10,11 @@ import { getPluginToolMeta } from "../plugins/tool-metadata.js";
 import { AsyncWorkScope } from "../shared/async-work-scope.js";
 import { createCombinedSessionMcpRuntime } from "./agent-bundle-mcp-combined.js";
 import {
+  catalogTool,
+  fixtureCatalog,
+  fixtureRuntime,
+} from "./agent-bundle-mcp-fixture.test-support.js";
+import {
   buildBundleMcpToolsFromCatalog,
   createBundleMcpToolRuntime,
   materializeBundleMcpToolsForRun,
@@ -29,21 +34,6 @@ const MCP_APP_RESOURCE_MIME_TYPE = "text/html;profile=mcp-app";
 
 function firstTool(runtime: Pick<BundleMcpToolRuntime, "tools">) {
   return expectDefined(runtime.tools[0], "first materialized tool");
-}
-
-function catalogTool(
-  serverName: string,
-  toolName: string,
-  overrides: Partial<McpCatalogTool> = {},
-): McpCatalogTool {
-  return {
-    serverName,
-    safeServerName: serverName,
-    toolName,
-    inputSchema: { type: "object", properties: {} },
-    fallbackDescription: toolName,
-    ...overrides,
-  };
 }
 
 function knowledgeCatalog(server: Partial<McpToolCatalog["servers"][string]> = {}): McpToolCatalog {
@@ -80,27 +70,19 @@ function makeToolRuntime(
       fallbackDescription: "Bundle probe",
     }),
   ];
-  const peekCatalog = (): McpToolCatalog => ({
-    version: 1,
-    generatedAt: 0,
-    servers: {
-      [serverName]: {
-        serverName,
-        launchSummary: serverName,
-        toolCount: tools.length,
-        supportsParallelToolCalls: params.supportsParallelToolCalls ?? false,
-      },
-    },
-    tools,
-  });
-  return {
+  const peekCatalog = (): McpToolCatalog => {
+    const catalog = fixtureCatalog(serverName, tools);
+    catalog.servers[serverName]!.supportsParallelToolCalls =
+      params.supportsParallelToolCalls ?? false;
+    return catalog;
+  };
+  return fixtureRuntime(peekCatalog, {
     sessionId: "session-collision",
     workspaceDir: "/tmp",
     configFingerprint: "fingerprint",
     createdAt: 0,
     lastUsedAt: 0,
     markUsed: () => {},
-    getCatalog: async () => peekCatalog(),
     peekCatalog,
     callTool: async () =>
       params.result ?? {
@@ -109,7 +91,7 @@ function makeToolRuntime(
       },
     joinCleanup: async () => {},
     dispose: async () => {},
-  };
+  });
 }
 
 async function executeMcpToolResult(result: CallToolResult) {
@@ -393,21 +375,7 @@ describe("createBundleMcpToolRuntime", () => {
 
   it("carries server instructions onto resource and prompt utility tools", () => {
     const tools = buildBundleMcpToolsFromCatalog({
-      catalog: {
-        version: 1,
-        generatedAt: 0,
-        servers: {
-          bundleProbe: {
-            serverName: "bundleProbe",
-            launchSummary: "bundleProbe",
-            toolCount: 0,
-            instructions: "Read the catalogue before citing a resource.",
-            resources: { listChanged: false },
-            prompts: { listChanged: false },
-          },
-        },
-        tools: [],
-      },
+      catalog: knowledgeCatalog({ instructions: "Read the catalogue before citing a resource." }),
     });
 
     expect(tools.map((tool) => getPluginToolMeta(tool)?.mcp?.operation)).toEqual([

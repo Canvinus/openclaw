@@ -1,3 +1,4 @@
+import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import {
   ErrorCodes,
   errorShape,
@@ -21,12 +22,11 @@ import {
 import { fetchClawHubPluginSkill } from "../../infra/clawhub-plugin-skills.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import {
-  encodePluginDiscoveryId,
-  encodeLocalPluginDiscoveryId,
   findLocalPluginByIdentity,
   joinClawHubPluginCatalog,
   joinClawHubPluginDetail,
   joinLocalPluginDetail,
+  pluginCatalogId,
   resolvePluginDiscoveryIdentity,
 } from "../../plugins/catalog-discovery.js";
 import { registerClawHubCatalogIconUrls } from "../../plugins/catalog-icon-registry.js";
@@ -131,9 +131,7 @@ export const pluginsHandlers: GatewayRequestHandlers = {
             const error = failure ? `${failure.serviceId}: ${failure.error}` : record?.error;
             return Object.assign({}, plugin, {
               compatibilityNotices: buildPluginSdkDeprecationNotices(plugin.id),
-              catalogId: plugin.clawhubPackage
-                ? encodePluginDiscoveryId(plugin.clawhubPackage)
-                : encodeLocalPluginDiscoveryId(plugin.id),
+              catalogId: pluginCatalogId(plugin),
               runtime: {
                 state:
                   record?.status === "loaded"
@@ -143,7 +141,7 @@ export const pluginsHandlers: GatewayRequestHandlers = {
                     : record?.status === "disabled"
                       ? "disabled"
                       : "unloaded",
-                ...(error ? { error: error.slice(0, 2000) } : {}),
+                ...(error ? { error: truncateUtf16Safe(error, 2000) } : {}),
               },
             });
           }),

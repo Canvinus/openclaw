@@ -199,10 +199,7 @@ describe("before_tool_call hook integration", () => {
   });
 
   it("does not enter the tool body when a slow hook settles after cancellation", async () => {
-    let releaseHook: () => void = () => {};
-    const hookGate = new Promise<void>((resolve) => {
-      releaseHook = resolve;
-    });
+    const { promise: hookGate, resolve: releaseHook } = createDeferred();
     beforeToolCallHook = installBeforeToolCallHook({
       runBeforeToolCallImpl: async () => {
         await hookGate;
@@ -541,10 +538,7 @@ describe("before_tool_call hook deduplication (#15502)", () => {
   );
 
   it("rechecks a private source guard after asynchronous before-tool policy", async () => {
-    let releaseHook: (() => void) | undefined;
-    const held = new Promise<void>((resolve) => {
-      releaseHook = resolve;
-    });
+    const { promise: held, resolve: releaseHook } = createDeferred();
     beforeToolCallHook = installBeforeToolCallHook({
       runBeforeToolCallImpl: async () => {
         await held;
@@ -565,7 +559,7 @@ describe("before_tool_call hook deduplication (#15502)", () => {
     const pending = expectDefined(source.execute, "guarded source execute")("call-guard", {});
     await vi.waitFor(() => expect(beforeToolCallHook).toHaveBeenCalledOnce());
     authorityActive = false;
-    releaseHook?.();
+    releaseHook();
 
     await expect(pending).rejects.toThrow("delegated authority closed");
     expect(execute).not.toHaveBeenCalled();
@@ -574,14 +568,8 @@ describe("before_tool_call hook deduplication (#15502)", () => {
   it.each(["adapter", "client"] as const)(
     "suppresses the %s body after awaited hook preflight",
     async (kind) => {
-      let releaseHook!: () => void;
-      let markHookStarted!: () => void;
-      const hookStarted = new Promise<void>((resolve) => {
-        markHookStarted = resolve;
-      });
-      const hookRelease = new Promise<void>((resolve) => {
-        releaseHook = resolve;
-      });
+      const { promise: hookStarted, resolve: markHookStarted } = createDeferred();
+      const { promise: hookRelease, resolve: releaseHook } = createDeferred();
       beforeToolCallHook = installBeforeToolCallHook({
         runBeforeToolCallImpl: async () => {
           markHookStarted();
@@ -709,179 +697,70 @@ describe("before_tool_call hook deduplication (#15502)", () => {
     }
     const extensionContext = {} as Parameters<typeof def.execute>[4];
 
-    const result = await def.execute(
-      "call-code-mode-exec",
-      { code: "return 1;" },
-      undefined,
-      undefined,
-      extensionContext,
-    );
-
-    expect(result.details).toMatchObject({
-      status: "blocked",
-      reason: "blocked before code-mode execution",
-    });
-    expect(beforeToolCallHook).toHaveBeenCalledWith(
+    for (const { toolCallId, input, expectedParams, metadata } of [
       {
-        toolName: "exec",
-        params: { code: "return 1;", command: "return 1;" },
-        toolKind: "code_mode_exec",
-        toolInputKind: "javascript",
-        runId: "run-main",
         toolCallId: "call-code-mode-exec",
+        input: { code: "return 1;" },
+        expectedParams: { code: "return 1;", command: "return 1;" },
+        metadata: { toolInputKind: "javascript" },
       },
       {
-        toolName: "exec",
-        toolKind: "code_mode_exec",
-        toolInputKind: "javascript",
-        agentId: "main",
-        sessionKey: "agent:main:main",
-        sessionId: "session-main",
-        runId: "run-main",
-        toolCallId: "call-code-mode-exec",
-      },
-    );
-
-    beforeToolCallHook.mockClear();
-    const commandOnlyResult = await def.execute(
-      "call-code-mode-exec-command",
-      { command: "return 2;" },
-      undefined,
-      undefined,
-      extensionContext,
-    );
-
-    expect(commandOnlyResult.details).toMatchObject({
-      status: "blocked",
-      reason: "blocked before code-mode execution",
-    });
-    expect(beforeToolCallHook).toHaveBeenCalledWith(
-      {
-        toolName: "exec",
-        params: { code: "return 2;", command: "return 2;" },
-        toolKind: "code_mode_exec",
-        toolInputKind: "javascript",
-        runId: "run-main",
         toolCallId: "call-code-mode-exec-command",
+        input: { command: "return 2;" },
+        expectedParams: { code: "return 2;", command: "return 2;" },
+        metadata: { toolInputKind: "javascript" },
       },
       {
-        toolName: "exec",
-        toolKind: "code_mode_exec",
-        toolInputKind: "javascript",
-        agentId: "main",
-        sessionKey: "agent:main:main",
-        sessionId: "session-main",
-        runId: "run-main",
-        toolCallId: "call-code-mode-exec-command",
-      },
-    );
-
-    beforeToolCallHook.mockClear();
-    const blankCodeAliasResult = await def.execute(
-      "call-code-mode-exec-blank-code",
-      { code: "", command: "return 3;" },
-      undefined,
-      undefined,
-      extensionContext,
-    );
-
-    expect(blankCodeAliasResult.details).toMatchObject({
-      status: "blocked",
-      reason: "blocked before code-mode execution",
-    });
-    expect(beforeToolCallHook).toHaveBeenCalledWith(
-      {
-        toolName: "exec",
-        params: { code: "return 3;", command: "return 3;" },
-        toolKind: "code_mode_exec",
-        toolInputKind: "javascript",
-        runId: "run-main",
         toolCallId: "call-code-mode-exec-blank-code",
+        input: { code: "", command: "return 3;" },
+        expectedParams: { code: "return 3;", command: "return 3;" },
+        metadata: { toolInputKind: "javascript" },
       },
       {
-        toolName: "exec",
-        toolKind: "code_mode_exec",
-        toolInputKind: "javascript",
-        agentId: "main",
-        sessionKey: "agent:main:main",
-        sessionId: "session-main",
-        runId: "run-main",
-        toolCallId: "call-code-mode-exec-blank-code",
-      },
-    );
-
-    beforeToolCallHook.mockClear();
-    const typescriptResult = await def.execute(
-      "call-code-mode-exec-typescript",
-      {
-        code: "const value: number = 5;",
-        language: "typescript",
-      },
-      undefined,
-      undefined,
-      extensionContext,
-    );
-
-    expect(typescriptResult.details).toMatchObject({
-      status: "blocked",
-      reason: "blocked before code-mode execution",
-    });
-    expect(beforeToolCallHook).toHaveBeenCalledWith(
-      {
-        toolName: "exec",
-        params: {
+        toolCallId: "call-code-mode-exec-typescript",
+        input: { code: "const value: number = 5;", language: "typescript" },
+        expectedParams: {
           code: "const value: number = 5;",
           command: "const value: number = 5;",
           language: "typescript",
         },
-        toolKind: "code_mode_exec",
-        runId: "run-main",
-        toolCallId: "call-code-mode-exec-typescript",
+        metadata: {},
       },
       {
-        toolName: "exec",
-        toolKind: "code_mode_exec",
-        agentId: "main",
-        sessionKey: "agent:main:main",
-        sessionId: "session-main",
-        runId: "run-main",
-        toolCallId: "call-code-mode-exec-typescript",
-      },
-    );
-
-    beforeToolCallHook.mockClear();
-    const malformedAliasResult = await def.execute(
-      "call-code-mode-exec-null-command",
-      { code: "return 4;", command: null },
-      undefined,
-      undefined,
-      extensionContext,
-    );
-
-    expect(malformedAliasResult.details).toMatchObject({
-      status: "blocked",
-      reason: "blocked before code-mode execution",
-    });
-    expect(beforeToolCallHook).toHaveBeenCalledWith(
-      {
-        toolName: "exec",
-        params: { code: "return 4;", command: "return 4;" },
-        toolKind: "code_mode_exec",
-        toolInputKind: "javascript",
-        runId: "run-main",
         toolCallId: "call-code-mode-exec-null-command",
+        input: { code: "return 4;", command: null },
+        expectedParams: { code: "return 4;", command: "return 4;" },
+        metadata: { toolInputKind: "javascript" },
       },
-      {
-        toolName: "exec",
-        toolKind: "code_mode_exec",
-        toolInputKind: "javascript",
-        agentId: "main",
-        sessionKey: "agent:main:main",
-        sessionId: "session-main",
-        runId: "run-main",
-        toolCallId: "call-code-mode-exec-null-command",
-      },
-    );
+    ]) {
+      beforeToolCallHook.mockClear();
+      const result = await def.execute(toolCallId, input, undefined, undefined, extensionContext);
+
+      expect(result.details).toMatchObject({
+        status: "blocked",
+        reason: "blocked before code-mode execution",
+      });
+      expect(beforeToolCallHook).toHaveBeenCalledWith(
+        {
+          toolName: "exec",
+          params: expectedParams,
+          toolKind: "code_mode_exec",
+          ...metadata,
+          runId: "run-main",
+          toolCallId,
+        },
+        {
+          toolName: "exec",
+          toolKind: "code_mode_exec",
+          ...metadata,
+          agentId: "main",
+          sessionKey: "agent:main:main",
+          sessionId: "session-main",
+          runId: "run-main",
+          toolCallId,
+        },
+      );
+    }
   });
 
   it("normalizes outer code-mode exec hook params when a wrapper owns the hook", async () => {
@@ -1273,10 +1152,7 @@ describe("before_tool_call hook deduplication (#15502)", () => {
 
 describe("before_tool_call adapter and client tool integration", () => {
   function installAbortBlockingHook() {
-    let markStarted: () => void = () => {};
-    const started = new Promise<void>((resolve) => {
-      markStarted = resolve;
-    });
+    const { promise: started, resolve: markStarted } = createDeferred();
     let observedAbort = false;
     installBeforeToolCallHook({
       runBeforeToolCallImpl: async (_event, ctx) => {
@@ -1414,10 +1290,7 @@ describe("before_tool_call adapter and client tool integration", () => {
   });
 
   it("preserves client tool source order when hooks resolve out of order", async () => {
-    let releaseFirstHook: (() => void) | undefined;
-    const firstHookGate = new Promise<void>((resolve) => {
-      releaseFirstHook = resolve;
-    });
+    const { promise: firstHookGate, resolve: releaseFirstHook } = createDeferred();
     installBeforeToolCallHook({
       runBeforeToolCallImpl: async (event: unknown) => {
         const toolName = (event as { toolName?: string }).toolName;
@@ -1500,9 +1373,6 @@ describe("before_tool_call adapter and client tool integration", () => {
       { name: "second_tool", completed: true },
     ]);
 
-    if (!releaseFirstHook) {
-      throw new Error("Expected first before-tool-call hook release callback to be initialized");
-    }
     releaseFirstHook();
     await firstRun;
 

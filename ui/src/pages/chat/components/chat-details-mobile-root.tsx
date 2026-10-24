@@ -1,8 +1,9 @@
 import type { JSX } from "@solidjs/web";
-import { For, Show } from "solid-js";
+import { For, Loading, Show, children } from "solid-js";
 import type { ControlUiSessionPullRequest } from "../../../../../src/gateway/control-ui-contract.js";
 import type { CronCompactJob } from "../../../api/types.ts";
 import { Icon, type IconName } from "../../../components/solid/icon.tsx";
+import { createTextOverflow } from "../../../components/solid/text-overflow.ts";
 import type { ChatSubagentActivity } from "../chat-subagent-wait.ts";
 import { ChatDetailsSubagents, type ChatDetailsSubagentsProps } from "./chat-details-subagents.tsx";
 import {
@@ -39,7 +40,6 @@ type ChatDetailsMobileCollection<T> = {
 
 type ChatDetailsMobileRootDestination =
   | { kind: "people" }
-  | { kind: "context" }
   | { kind: "task-progress" }
   | { kind: "subagents" }
   | { kind: "subagent"; sessionKey: ChatSubagentActivity["key"] }
@@ -83,7 +83,6 @@ export type ChatDetailsMobileRootProps = {
   processes?: JSX.Element;
   /** The complete mobile Environment section, including its own heading and group. */
   environment?: JSX.Element;
-  context?: JSX.Element;
   pullRequests?: ChatPullRequestMobileCollectionProps & { summary: ChatDetailsMobileEntry };
   /** Native publication/recovery can exist without any attached PR. */
   publication?: JSX.Element;
@@ -91,7 +90,6 @@ export type ChatDetailsMobileRootProps = {
   publicationEntry?: ChatDetailsMobileEntry;
   automations?: ChatDetailsMobileCollection<CronCompactJob["id"]>;
   outputs?: ChatDetailsMobileEntry;
-  outputsNotice?: JSX.Element;
   /** Supply even for one version; omission is not a greater-than-one policy. */
   versions?: ChatDetailsMobileEntry;
   onNavigate: (
@@ -149,10 +147,8 @@ function RootEntry(props: {
       </Show>
       <span class="chat-details-mobile-root__copy">
         <span
-          class={[
-            "chat-details-mobile-root__label",
-            { "chat-details-mobile-root__label--note": props.entry.truncateDescription },
-          ]}
+          ref={createTextOverflow(() => props.entry.label)}
+          class="chat-details-mobile-root__label"
         >
           {props.entry.label}
         </span>
@@ -185,6 +181,7 @@ function RootEntry(props: {
 export function ChatDetailsMobileRoot(props: ChatDetailsMobileRootProps) {
   const pullRequestsTotal = () => props.pullRequests?.pullRequests.length ?? 0;
   const automationsTotal = () => props.automations?.total ?? props.automations?.items.length ?? 0;
+  const automationNotice = children(() => props.automations?.notice);
 
   return (
     <div class="chat-details-mobile-root">
@@ -226,11 +223,6 @@ export function ChatDetailsMobileRoot(props: ChatDetailsMobileRootProps) {
         )}
       </Show>
       {props.environment}
-      <Show when={props.context}>
-        <RootGroup name="context" label={props.labels.context}>
-          {props.context}
-        </RootGroup>
-      </Show>
       <Show
         when={
           pullRequestsTotal() > 0 ||
@@ -279,55 +271,54 @@ export function ChatDetailsMobileRoot(props: ChatDetailsMobileRootProps) {
           </Show>
         </RootGroup>
       </Show>
-      <Show when={automationsTotal() > 0 || props.automations?.notice}>
-        <RootGroup name="automations" label={props.labels.automations}>
-          <Show when={props.automations}>
-            {(collection) => (
-              <>
-                <Show
-                  when={automationsTotal() > 1}
-                  fallback={
-                    <For each={collection().items} keyed={(entry) => entry.value}>
-                      {(entry) => (
-                        <RootEntry
-                          entry={entry()}
-                          icon="clock"
-                          destination={{ kind: "automation", jobId: entry().value }}
-                          root={props}
-                        />
-                      )}
-                    </For>
-                  }
-                >
-                  <Show when={automationsTotal() > 0}>
-                    <RootEntry
-                      entry={collection().summary}
-                      icon="clock"
-                      destination={{ kind: "automations" }}
-                      root={props}
-                    />
+      <Loading>
+        <Show when={automationsTotal() > 0 || automationNotice.toArray().length > 0}>
+          <RootGroup name="automations" label={props.labels.automations}>
+            <Show when={props.automations}>
+              {(collection) => (
+                <>
+                  <Show
+                    when={automationsTotal() > 1}
+                    fallback={
+                      <For each={collection().items} keyed={(entry) => entry.value}>
+                        {(entry) => (
+                          <RootEntry
+                            entry={entry()}
+                            icon="clock"
+                            destination={{ kind: "automation", jobId: entry().value }}
+                            root={props}
+                          />
+                        )}
+                      </For>
+                    }
+                  >
+                    <Show when={automationsTotal() > 0}>
+                      <RootEntry
+                        entry={collection().summary}
+                        icon="clock"
+                        destination={{ kind: "automations" }}
+                        root={props}
+                      />
+                    </Show>
                   </Show>
-                </Show>
-                {collection().notice}
-              </>
-            )}
-          </Show>
-        </RootGroup>
-      </Show>
-      <Show when={props.outputs || props.outputsNotice}>
-        <RootGroup name="outputs" label={props.labels.generatedFiles}>
-          <Show when={props.outputs}>
-            {(entry) => (
-              <RootEntry
-                entry={entry()}
-                icon="fileText"
-                destination={{ kind: "outputs" }}
-                root={props}
-              />
-            )}
-          </Show>
-          {props.outputsNotice}
-        </RootGroup>
+                  {automationNotice()}
+                </>
+              )}
+            </Show>
+          </RootGroup>
+        </Show>
+      </Loading>
+      <Show when={props.outputs}>
+        {(entry) => (
+          <RootGroup name="outputs" label={props.labels.generatedFiles}>
+            <RootEntry
+              entry={entry()}
+              icon="fileText"
+              destination={{ kind: "outputs" }}
+              root={props}
+            />
+          </RootGroup>
+        )}
       </Show>
       <Show when={props.versions && props.versions.metadata !== 0 && props.versions}>
         {(entry) => (

@@ -379,6 +379,7 @@ export async function handleEmbeddedAssistantFailure(input: {
           profileId: failedProfileId,
           reason: assistantProfileFailureReason,
           modelId,
+          retryAfterMs: assistantSignal?.retryAfterMs,
         });
       } catch (err) {
         log.warn(`profile failure mark failed: ${String(err)}`);

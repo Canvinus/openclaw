@@ -72,7 +72,6 @@ import { resolveSubagentSessionStatus } from "../registry/subagent-session-metri
 import {
   activateSwarmRun,
   closeSwarmScheduler,
-  enqueueSwarmRun,
   holdQueuedSwarmRun,
   releaseSwarmRun,
   reserveSwarmRun,
@@ -80,6 +79,7 @@ import {
 import { cleanupProvisionalSession } from "./subagent-spawn-cleanup.js";
 import { callSubagentGateway } from "./subagent-spawn-gateway.js";
 import { registerNativeCancellationCases } from "./subagent-spawn.cancellation.test-support.js";
+import { registerCollectorResultSpawnCases } from "./subagent-spawn.collector-results.test-support.js";
 import { registerGuestSpawnCases } from "./subagent-spawn.guest.test-support.js";
 import { registerParticipantSpawnCases } from "./subagent-spawn.participants.test-support.js";
 import { registerNativePluginSpawnCases } from "./subagent-spawn.plugin-native.test-support.js";
@@ -90,6 +90,7 @@ import {
   createEmbeddedRunWaiter,
   createSpawnBoundaryParent,
   createSpawnOperatorSource,
+  holdSpawnCapacity,
   prepareIsolatedChildAdmissionProof,
   recordSpawnBoundaryFinal,
 } from "./subagent-spawn.production-boundary.test-support.js";
@@ -336,7 +337,7 @@ async function createGuestParent(audit = true) {
   const source = createSpawnOperatorSource(guest.id, guestRole.scopes, {
     modelPolicy,
     rolePolicy: { sessionAccessCap: "none", sandboxRequired: true, agents: ["main"] },
-    readCurrentRoleAssignment: () => "guest",
+    readCurrentRoleFacts: () => ({ assignedRole: "guest" }),
   });
   const bound = await createBoundParent(source.authority, {
     guestProfileId: source.authority.profileId,
@@ -365,6 +366,11 @@ describe("recursive spawn production boundary", () => {
     settleRootWork: (keepObserving) => settleRootWork(keepObserving),
   });
   registerNativePluginSpawnCases({
+    ...boundSpawnFixture,
+    settleRootWork: (keepObserving) => settleRootWork(keepObserving),
+    waitForEmbeddedRun,
+  });
+  registerCollectorResultSpawnCases({
     ...boundSpawnFixture,
     settleRootWork: (keepObserving) => settleRootWork(keepObserving),
     waitForEmbeddedRun,
@@ -592,18 +598,10 @@ describe("recursive spawn production boundary", () => {
       const bound = await createBoundParent(operatorAuthority);
       const { context, runtime, identities } = await createBoundGateway(bound);
       const groupId = "production-boundary-queued";
-      const capacityStarted = createDeferred();
-      enqueueSwarmRun({
-        groupId: JSON.stringify(["main", parentSessionKey, groupId]),
-        runId: "production-boundary-capacity",
-        maxConcurrent: 1,
-        activeRunIds: [],
-        start: async () => {
-          capacityStarted.resolve();
-        },
-        onStartFailure: () => true,
-      });
-      await capacityStarted.promise;
+      await holdSpawnCapacity(
+        JSON.stringify(["main", parentSessionKey, groupId]),
+        "production-boundary-capacity",
+      );
       const releaserInstance = createOperationalRunInstanceRef("capacity-releasing-run");
       const releaserAuthority = claimAgentRunDelegatedAuthority(releaserInstance);
       const modelRun = createDeferred<EmbeddedAgentRunResult>();

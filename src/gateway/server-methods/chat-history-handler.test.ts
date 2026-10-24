@@ -24,7 +24,6 @@ import {
   expectHistoryFailure as expectFailure,
   requestHistory,
 } from "./chat-history-fixtures.test-support.js";
-import { chatHistoryHandlers } from "./chat-history-handler.js";
 import { createHistoryReadContext } from "./chat-history.test-helpers.js";
 import * as metadataCases from "./chat-metadata-ownership.test-support.js";
 import { connectChatMetadataAccount } from "./chat-metadata-runtime.test-support.js";
@@ -219,6 +218,32 @@ it.each(["chat.history", "chat.startup"] as const)(
       });
     }),
 );
+
+it("chat.history reports the session agent's own verboseDefault", () =>
+  withOpenClawTestState({ scenario: "minimal", prepareProfileCatalog: true }, async (state) => {
+    const cfg = {
+      agents: {
+        defaults: { verboseDefault: "off" },
+        entries: { main: {}, ops: { verboseDefault: "full" } },
+      },
+    } satisfies OpenClawConfig;
+    await state.writeConfig(cfg);
+    setRuntimeConfigSnapshot(cfg);
+    const context = await createHistoryReadContext({ getRuntimeConfig: () => cfg });
+    const client = { connect: { scopes: ["operator.admin"] } } as never;
+    for (const [agentId, expected] of [
+      ["ops", "full"],
+      ["main", "off"],
+    ] as const) {
+      const scope = { agentId, sessionKey: `agent:${agentId}:main`, sessionId: `${agentId}-main` };
+      await sessions.upsertSessionEntryCore(scope, { sessionId: scope.sessionId, updatedAt: 1 });
+      const payload = expectSuccess(
+        await requestHistory("chat.history", { sessionKey: scope.sessionKey }, context, client),
+      );
+      expect(payload.verboseLevel).toBe(expected);
+      expect(payload.sessionInfo).toMatchObject({ verboseLevel: expected });
+    }
+  }));
 
 it.each(["chat.history", "chat.startup"] as const)(
   "%s projects unbound canonical ACP metadata without host ACP reads",
@@ -451,14 +476,15 @@ it.each(["chat.history", "chat.startup"] as const)(
         null,
         respond,
       );
-      // Count synchronous history preparation before optional startup icon work resumes.
+      await pending;
       const preparationCopies = cloneSpy.mock.calls.filter(
-        ([value]) => asOptionalRecord(value)?.sessionId === scope.sessionId,
+        ([value]) =>
+          asOptionalRecord(value)?.sessionId === scope.sessionId &&
+          asOptionalRecord(value)?.toolOverrides !== undefined,
       ).length;
       expect(parseSpy.mock.calls.some(([value]) => value.includes(skillsSnapshot.prompt))).toBe(
         false,
       );
-      await pending;
       expect(
         parseSpy.mock.calls.filter(([value]) => value.includes('"sessionId":"history-child"'))
           .length,
@@ -713,23 +739,12 @@ it("returns a typed selection error for an ownerless explicit fleet", async () =
   const config: OpenClawConfig = {
     agents: { ownership: "explicit", entries: { ops: {}, research: {} } },
   };
-  const respond = vi.fn();
   const readChatMetadata = vi.fn();
-
-  await expectDefined(
-    chatHistoryHandlers["chat.metadata"],
-    'chatHistoryHandlers["chat.metadata"] test invariant',
-  )({
-    params: {},
-    respond: respond as unknown as RespondFn,
-    req: {} as never,
-    client: null,
-    isWebchatConnect: () => false,
-    context: {
-      getRuntimeConfig: () => config,
-      readChatMetadata,
-    } as unknown as GatewayRequestContext,
-  });
+  const respond = await requestHistory(
+    "chat.metadata",
+    {},
+    createDirectChatContext({ getRuntimeConfig: () => config, readChatMetadata }),
+  );
 
   expect(respond).toHaveBeenCalledWith(
     false,
