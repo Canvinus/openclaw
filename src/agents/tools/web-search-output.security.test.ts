@@ -120,6 +120,32 @@ describe("web_search normalized output security", () => {
     expect(kept[0]?.[2]).toBeGreaterThan(9_000);
   });
 
+  it("keeps rows whole when sanitized prose demand changes their allocation order", () => {
+    const normalized = normalize({
+      results: [
+        { title: "a", url: "https://example.com/a", snippet: "<s>".repeat(500) },
+        { title: "b", url: "https://example.com/b", snippet: "x".repeat(6_000) },
+      ],
+    });
+
+    assertOutputKind(normalized, "results");
+    expect(normalized.truncated).toBeUndefined();
+    expect(
+      normalized.results.map((row) => ({
+        title: stripWrapMarkers(row.title),
+        url: row.url,
+        snippet: stripWrapMarkers(row.snippet ?? ""),
+      })),
+    ).toEqual([
+      {
+        title: "a",
+        url: "https://example.com/a",
+        snippet: "[REMOVED_SPECIAL_TOKEN]".repeat(500),
+      },
+      { title: "b", url: "https://example.com/b", snippet: "x".repeat(6_000) },
+    ]);
+  });
+
   it("charges final sanitized answer text when short special tokens expand", () => {
     const normalized = normalize({ content: "<s>".repeat(6_666) });
     expect(normalized).toMatchObject({ kind: "answer", truncated: true });

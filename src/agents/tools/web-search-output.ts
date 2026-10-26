@@ -301,7 +301,13 @@ export function normalizeWebSearchOutput(params: {
       const siteName = typeof row.siteName === "string" ? row.siteName : undefined;
       const proseChars = [title, snippet, siteName].reduce(
         (total, value) =>
-          total + (value === undefined ? 0 : unwrapWebSearchOutputText(value).length),
+          total +
+          (value === undefined
+            ? 0
+            : truncateSanitizedExternalContent(
+                unwrapWebSearchOutputText(value),
+                Number.MAX_SAFE_INTEGER,
+              ).text.length),
         0,
       );
       return { url, title, snippet, published, siteName, proseChars };
