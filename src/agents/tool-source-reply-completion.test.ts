@@ -1,4 +1,4 @@
-import { beforeEach, expect, it } from "vitest";
+import { beforeEach, expect, it, vi } from "vitest";
 import { attachEmbeddedMessageDeliveryFact } from "./embedded-agent-message-delivery.js";
 import { copyInternalToolResultState } from "./runtime/internal-hooks.js";
 import {
@@ -30,6 +30,11 @@ const attach = (
   status: "waiting" | "completed" | "failed",
   input = inputA,
 ) => cell.attach({}, status, input);
+function deliveredCell(input = inputA) {
+  const cell = new ToolSourceReplyCell(input);
+  cell.observe(deliveredResult());
+  return cell;
+}
 
 it("does not accept public delivery or cell fields as completion authority", () => {
   const cell = new ToolSourceReplyCell(inputA);
@@ -65,20 +70,45 @@ it("preserves delivered authority through private transforms and guest failure",
 });
 
 it("holds finality across exec/wait until every sibling cell settles", () => {
-  const reply = new ToolSourceReplyCell(inputA);
+  const reply = deliveredCell();
   const sibling = new ToolSourceReplyCell(inputA);
-  reply.observe(deliveredResult());
   expect(complete([attach(reply, "completed"), attach(sibling, "waiting")])).toBe(false);
   expect(complete([attach(sibling, "waiting")])).toBe(false);
   expect(complete([attach(sibling, "completed")])).toBe(true);
   expect(complete([attach(reply, "completed")])).toBe(false);
 });
 
+it("settles a tool batch without additional materialization passes over its cells", () => {
+  const cells = Array.from({ length: 64 }, () => new ToolSourceReplyCell(inputA));
+  cells[0]!.observe(deliveredResult());
+  const results = cells.map((cell) => attach(cell, "completed"));
+  const iterate = Set.prototype[Symbol.iterator];
+  let visits = 0;
+  const iterator = vi.spyOn(Set.prototype, Symbol.iterator).mockImplementation(function* (
+    this: Set<unknown>,
+  ) {
+    for (const value of iterate.call(this)) {
+      visits += 1;
+      yield value;
+    }
+    return undefined;
+  });
+  let completed: boolean;
+  try {
+    completed = complete(results);
+  } finally {
+    iterator.mockRestore();
+  }
+  expect(completed).toBe(true);
+  // Enroll observations, join/evaluate cells, and consume the settled batch.
+  expect(visits).toBeLessThanOrEqual(cells.length * 3);
+  expect(complete(results)).toBe(false);
+});
+
 it("joins additional sibling cells without losing the original batch", () => {
-  const reply = new ToolSourceReplyCell(inputA);
+  const reply = deliveredCell();
   const sibling = new ToolSourceReplyCell(inputA);
   const laterSibling = new ToolSourceReplyCell(inputA);
-  reply.observe(deliveredResult());
   expect(complete([attach(reply, "waiting"), attach(sibling, "waiting")])).toBe(false);
   expect(complete([attach(reply, "completed"), attach(laterSibling, "waiting")])).toBe(false);
   expect(complete([attach(sibling, "completed")])).toBe(false);
@@ -86,18 +116,16 @@ it("joins additional sibling cells without losing the original batch", () => {
 });
 
 it("does not transfer finality to an unrelated batch", () => {
-  const reply = new ToolSourceReplyCell(inputA);
-  reply.observe(deliveredResult());
+  const reply = deliveredCell();
   expect(complete([attach(reply, "waiting")])).toBe(false);
   expect(complete([attach(new ToolSourceReplyCell(inputA), "completed")])).toBe(false);
   expect(complete([attach(reply, "completed")])).toBe(true);
 });
 
 it("disarms an old batch when accepted steering precedes its eventual wait", () => {
-  const reply = new ToolSourceReplyCell(inputA);
+  const reply = deliveredCell();
   const sibling = new ToolSourceReplyCell(inputA);
   const inputB = {};
-  reply.observe(deliveredResult());
   expect(complete([attach(reply, "completed"), attach(sibling, "waiting")], true, inputA)).toBe(
     false,
   );
@@ -115,8 +143,7 @@ it("keeps a direct final reply pending behind an unfinished cell", () => {
 it.each([false, true])(
   "keeps failed-publication observations scoped to their input (new input=%s)",
   (newInput) => {
-    const cell = new ToolSourceReplyCell(inputA);
-    cell.observe(deliveredResult());
+    const cell = deliveredCell();
     owner.observe(attach(cell, "completed"));
     // Result publication failed before complete() could enroll the observation.
     expect(complete([], false, newInput ? {} : inputA)).toBe(!newInput);
@@ -139,18 +166,15 @@ it("does not enroll a late old-input observation in a new input's batch", () => 
 
 it("does not reassign an old cell's final reply when a new input waits on it", () => {
   const inputB = {};
-  const oldCell = new ToolSourceReplyCell(inputA);
-  oldCell.observe(deliveredResult());
+  const oldCell = deliveredCell();
   expect(complete([attach(oldCell, "completed", inputB)], false, inputB)).toBe(false);
   expect(oldCell.finalDelivered).toBe(true);
 });
 
 it("joins an old cell waited by the current batch before consuming its fresh final reply", () => {
   const inputB = {};
-  const oldCell = new ToolSourceReplyCell(inputA);
-  const newCell = new ToolSourceReplyCell(inputB);
-  oldCell.observe(deliveredResult());
-  newCell.observe(deliveredResult());
+  const oldCell = deliveredCell();
+  const newCell = deliveredCell(inputB);
   expect(
     complete(
       [attach(oldCell, "waiting", inputB), attach(newCell, "completed", inputB)],

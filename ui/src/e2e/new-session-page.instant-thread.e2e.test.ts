@@ -5,6 +5,7 @@ import { waitForControlUiProofSurface } from "../test-helpers/control-ui-e2e-scr
 import { waitForControlUiRoute } from "../test-helpers/control-ui-e2e.ts";
 import { navigationDrawerToggle } from "../test-helpers/control-ui-navigation.ts";
 import { selectChatModelOption } from "../test-helpers/select-picker-e2e.ts";
+import { getInitialHistoryRequests } from "./chat-initial-history.test-support.ts";
 import {
   ONE_PIXEL_PNG_B64,
   captureUiProof,
@@ -70,7 +71,7 @@ suite.define(() => {
           await captureUiProof(suite, page, `instant-${incognito}-pending-chrome.png`);
           expect(await page.locator(".chat-pane__header").isVisible()).toBe(true);
           const followUpComposer = page.locator(
-            ".agent-chat__composer-combobox textarea:not(.new-session-page__message)",
+            ".agent-chat__composer-combobox:visible textarea:not(.new-session-page__message)",
           );
           await followUpComposer.waitFor({ state: "visible" });
           expect(await followUpComposer.isEnabled()).toBe(true);
@@ -103,6 +104,7 @@ suite.define(() => {
               .waitFor();
           }
           expect(await gateway.getRequests("chat.startup")).toHaveLength(0);
+          expect(await getInitialHistoryRequests(gateway)).toHaveLength(0);
           expect(await gateway.getRequests("chat.send")).toHaveLength(0);
           expect(await gateway.getRequests("sessions.patch")).toHaveLength(0);
           expect(
@@ -147,19 +149,20 @@ suite.define(() => {
           });
           await waitForCommittedChatRoute(page);
           expect(new URL(page.url()).pathname).toBe(controlUiSessionPath(confirmedKey));
-          await gateway.waitForRequest("chat.startup", { match: { sessionKey: confirmedKey } });
           await gateway.waitForRequest("mcp.app.discover", { match: { sessionKey: confirmedKey } });
           await expect.poll(() => page.locator("openclaw-chat-pane").count()).toBe(1);
-          expect(await gateway.getRequests("chat.startup")).toEqual(
-            expect.arrayContaining([
-              expect.objectContaining({
-                params: expect.objectContaining({ sessionKey: confirmedKey }),
-              }),
-            ]),
-          );
+          await expect
+            .poll(() => getInitialHistoryRequests(gateway))
+            .toEqual(
+              expect.arrayContaining([
+                expect.objectContaining({
+                  params: expect.objectContaining({ key: confirmedKey }),
+                }),
+              ]),
+            );
           expect(
-            (await gateway.getRequests("chat.startup")).every(
-              (request) => createParams(request).sessionKey === confirmedKey,
+            (await getInitialHistoryRequests(gateway)).every(
+              (request) => createParams(request).key === confirmedKey,
             ),
           ).toBe(true);
           expect(await page.evaluate(() => history.length)).toBe(historyLength + 1);
@@ -298,9 +301,7 @@ suite.define(() => {
         await page.getByLabel("Name", { exact: true }).fill("instant-proof");
         await page.keyboard.press("Escape");
         await page.locator('[data-chat-model-select="true"]').click();
-        await selectChatModelOption(
-          page.locator('[data-chat-model-option="synthetic/synthetic-model"]'),
-        );
+        await selectChatModelOption(page, "synthetic/synthetic-model");
         await page.locator('[data-chat-permission-select="true"]').click();
         await page.locator('[data-chat-permission-option="full"]').click();
         await evaluateControlUiContext(page, (application) => {
@@ -314,7 +315,7 @@ suite.define(() => {
         expect(first.agentId).toBe(requestedAgent);
         await expect.poll(() => page.locator("openclaw-chat-page").count()).toBe(1);
         const followUpComposer = page.locator(
-          ".agent-chat__composer-combobox textarea:not(.new-session-page__message)",
+          ".agent-chat__composer-combobox:visible textarea:not(.new-session-page__message)",
         );
         await followUpComposer.fill("Preserve this follow-up too");
         await followUpComposer.press("Enter");
@@ -332,6 +333,7 @@ suite.define(() => {
           .toContain("Synthetic admission refused");
         expect(page.url()).toBe(originalUrl);
         expect(await page.evaluate(() => history.length)).toBe(historyLength);
+        expect(await followUpComposer.count()).toBe(1);
         expect(await followUpComposer.inputValue()).toBe("Unfinished follow-up draft");
         expect(await page.locator(".chat-queue__text").allTextContents()).toEqual([
           "Preserve this follow-up too",
@@ -478,7 +480,7 @@ suite.define(() => {
       const first = createParams(await gateway.waitForRequest("sessions.create"));
       await expect.poll(() => page.locator("openclaw-chat-page").count()).toBe(1);
       const followUpComposer = page.locator(
-        ".agent-chat__composer-combobox textarea:not(.new-session-page__message)",
+        ".agent-chat__composer-combobox:visible textarea:not(.new-session-page__message)",
       );
       await followUpComposer.fill("Queued before reconnect");
       await followUpComposer.press("Enter");
@@ -535,7 +537,7 @@ suite.define(() => {
         await gateway.waitForRequest("sessions.create");
         await expect.poll(() => page.locator("openclaw-chat-page").count()).toBe(1);
         const followUpComposer = page.locator(
-          ".agent-chat__composer-combobox textarea:not(.new-session-page__message)",
+          ".agent-chat__composer-combobox:visible textarea:not(.new-session-page__message)",
         );
         if (followUps) {
           await followUpComposer.fill("private staged follow-up");
@@ -579,6 +581,7 @@ suite.define(() => {
           expect(page.url()).toBe(originalUrl);
           await captureUiProof(suite, page, `interrupted-boot-follow-ups-${followUps}.png`);
           if (followUps) {
+            expect(await followUpComposer.count()).toBe(1);
             expect(await followUpComposer.inputValue()).toBe("private unfinished follow-up");
             expect(await page.locator(".chat-queue__text").allTextContents()).toEqual([
               "private staged follow-up",

@@ -9,8 +9,11 @@ import { hasCommandProcessCleanupError } from "../process/exec-result.js";
 import * as processExec from "../process/exec.js";
 import { getOrCreatePromise } from "../shared/lazy-promise.js";
 import { resolveTestNodeExecPath } from "../test-utils/node-process.js";
+import { createCommandResult } from "../test-utils/npm-spec-install-test-helpers.js";
 import { pathExists } from "../utils.js";
+import { listDirectoryTreeStrict } from "./directory-walk.js";
 import { collectNestedErrorCandidates } from "./error-graph-internal.js";
+import { writeFixtureTree } from "./fixture-tree.test-support.js";
 import { UpdateRequesterRevokedError } from "./update-requester-authority.js";
 import { buildUpdateCommandRunner } from "./update-runner-command.js";
 import { updateGitCheckout } from "./update-runner-git.js";
@@ -142,14 +145,6 @@ export function isolateGitIdentity() {
   }
 }
 
-export async function writeFixtureTree(root: string, files: Record<string, string>) {
-  for (const [file, contents] of Object.entries(files)) {
-    const destination = path.join(root, file);
-    await fs.mkdir(path.dirname(destination), { recursive: true });
-    await fs.writeFile(destination, contents);
-  }
-}
-
 export const readText = (file: string) => fs.readFile(file, "utf8");
 
 export async function writeFixtureFiles(root: string, files: Record<string, string>) {
@@ -201,10 +196,7 @@ export async function writeGitFixtureManifest(
   );
 }
 
-export async function createGitFixtureCheckout(
-  directory: string,
-  manifest: Record<string, unknown> = {},
-) {
+async function createGitFixtureCheckout(directory: string, manifest: Record<string, unknown> = {}) {
   // Keep fixture-local identity authoritative during candidate rebases.
   isolateGitIdentity();
   const seed = await getOrCreatePromise(gitFixtureSeeds, JSON.stringify(manifest), async () => {
@@ -247,7 +239,7 @@ async function createGitFixtureSeed(directory: string, manifest: Record<string, 
   return { root, remote, beforeSha };
 }
 
-export async function advanceFixtureRemote(remote: string) {
+async function advanceFixtureRemote(remote: string) {
   await fs.writeFile(path.join(remote, "candidate.txt"), "candidate\n");
   await runFixtureGit(remote, "add", ".");
   await runFixtureGit(remote, "commit", "-m", "candidate");
@@ -338,15 +330,10 @@ export async function expectCancelledGitCandidateCleanup({
         );
         return buildResult;
       }
-      return {
+      return createCommandResult({
         stdout: argv[1] === "--version" ? pnpmVersion : "",
-        stderr: "",
-        code: 0,
-        signal: null,
-        killed: false,
-        termination: "exit",
         noOutputTimedOut: false,
-      };
+      });
     });
   try {
     const commandRunner = await buildUpdateCommandRunner();
@@ -485,7 +472,7 @@ export async function expectNoGitRuntimeStagingPaths(root: string, inspectionRoo
   for (const inspectionRoot of inspectionRoots) {
     await expectMissing(inspectionRoot);
   }
-  const entries = await fs.readdir(root, { recursive: true });
+  const entries = (await listDirectoryTreeStrict(root)).map((walkEntry) => walkEntry.relativePath);
   expect(
     entries.filter((entry) =>
       /\.openclaw-update-[0-9a-f]{8}-[0-9a-f-]{27}\.tmp(?:\/|$)/u.test(entry),
